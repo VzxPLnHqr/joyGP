@@ -7,33 +7,39 @@ object JoyBool:
   type Stack[T] = List[T]
 
   sealed trait Program {
+    def name: String
     def effect: ProgramState => ProgramState
+    override def toString = name
+    def apply(ps: ProgramState): ProgramState = effect(ps)
   }
   case class Quoted(p: Program) extends Program {
+
+    def name: String = s"[$p]"
     def effect: ProgramState => ProgramState =
       // the effect of a quotation is to push itself onto the exec stack
       state => state.copy(exec = Quoted(p) :: state.exec)
   }
-  case class Effect(f: ProgramState => ProgramState) extends Program {
+  case class Effect(name: String, f: ProgramState => ProgramState) extends Program {
     def effect = f
   }
+  def Effect(name: String)( f: ProgramState => ProgramState): Effect = Effect(name,f)
 
   // define how programs combine (it's a monoid!)
   extension (lhs: Program)
     def +(rhs: Program): Program = (lhs,rhs) match {
-      case (Quoted(b), Quoted(a)) => Effect {
+      case (Quoted(b), Quoted(a)) => Effect(s"[$b] [$a]") {
         // quotations just get pushed onto stack
         state => state.copy(exec = Quoted(a) :: Quoted(b) :: state.exec)
       }
-      case (Quoted(a), Effect(f)) => Effect {
+      case (Quoted(a), Effect(name,f)) => Effect(s"[$a] $name") {
         // try to execute the effect
         state => f(state.copy(exec = Quoted(a) :: state.exec))
       }
-      case (Effect(g), Effect(f)) => Effect {
+      case (Effect(nameg,g), Effect(namef,f)) => Effect(s"$nameg $namef") {
         // execute f after g
         state => f(g(state))
       }
-      case (Effect(f), Quoted(a)) => Effect {
+      case (Effect(name,f), Quoted(a)) => Effect(s"$name [$a]") {
         // execute f and then push Quoted(a) onto the stack
         state => 
           val afterF = f(state)
@@ -43,19 +49,19 @@ object JoyBool:
 
   // define elementary programs
   // most of the names taken from: http://tunes.org/~iepos/joy.html#appendix
-  val id = Effect(state => state)
+  val id = Effect("")(state => state)
 
   // nil == []
   val nil = Quoted(id)
 
-  val i = Effect { state => 
+  val i = Effect("i") { state => 
     // [A] i == A
     state.exec match {
       case Quoted(a) :: tail => a.effect(state.copy(exec = tail))
       case _ => state // noop
     }
   }
-  val k = Effect { state =>
+  val k = Effect("k") { state =>
     // [B] [A] k    == A
     state.exec match {
       case Quoted(a) :: Quoted(b) :: tail => a.effect(state.copy(exec = tail))
@@ -63,7 +69,7 @@ object JoyBool:
     }
   }
 
-  val z = Effect { state =>
+  val z = Effect("z") { state =>
     // [B] [A] z    == B
     state.exec match {
       case Quoted(a) :: Quoted(b) :: tail => b.effect(state.copy(exec = tail))
@@ -71,7 +77,7 @@ object JoyBool:
     }
   }
 
-  val swap = Effect { state =>
+  val swap = Effect("swap") { state =>
     // [B] [A] swap == [A] [B]
     state.exec match {
       case Quoted(a) :: Quoted(b) :: tail => state.copy(exec = Quoted(b) :: Quoted(a) :: tail)
@@ -79,7 +85,7 @@ object JoyBool:
     }
   }
 
-  val dup = Effect { state => 
+  val dup = Effect("dup") { state => 
     // [A] dup == [A] [A]
     state.exec match {
       case Quoted(a) :: tail => state.copy(exec = Quoted(a) :: Quoted(a) :: tail)
@@ -87,7 +93,7 @@ object JoyBool:
     }  
   }
 
-  val zap = Effect { state =>
+  val zap = Effect("zap") { state =>
     // [A] zap ==
     state.exec match {
       case Quoted(a) :: tail => state.copy(exec = tail)
@@ -96,7 +102,7 @@ object JoyBool:
 
   }
 
-  val cat = Effect { state => 
+  val cat = Effect("cat") { state => 
     // [B] [A] cat == [B A]
     state.exec match {
       case Quoted(a) :: Quoted(b) :: tail => state.copy(exec = Quoted(b + a) :: tail)
@@ -104,7 +110,7 @@ object JoyBool:
     }  
   }
 
-  val cons = Effect { state => 
+  val cons = Effect("cons") { state => 
     // [B] [A] cons == [[B] A]
     state.exec match {
       case Quoted(a) :: Quoted(b) :: tail => state.copy(exec = Quoted(Quoted(b) + a) :: tail)
@@ -112,7 +118,7 @@ object JoyBool:
     }
   }
 
-  val unit = Effect { state => 
+  val unit = Effect("unit") { state => 
     // [A] unit == [[A]]
     state.exec match {
       case Quoted(a) :: tail => state.copy(exec = Quoted(Quoted(a)) :: tail)
@@ -120,7 +126,7 @@ object JoyBool:
     }
   }
 
-  val dip = Effect { state => 
+  val dip = Effect("dip") { state => 
     // [B] [A] dip == A [B]
     state.exec match {
       case Quoted(a) :: Quoted(b) :: tail => 
@@ -130,7 +136,7 @@ object JoyBool:
     }
   }
 
-  val cake = Effect { state =>
+  val cake = Effect("cake") { state =>
     // [B] [A] cake == [[B] A] [A [B]]
     state.exec match {
       case (Quoted(a) :: Quoted(b) :: tail) =>
@@ -140,7 +146,7 @@ object JoyBool:
   }
 
   // define IO effects 
-  val readBit = Effect {
+  val readBit = Effect("readBit") {
     state =>
       // pop the next bit from the input
       // if it is 1, push Quoted(k) onto the stack
@@ -152,12 +158,12 @@ object JoyBool:
       }
   }
 
-  val putTrue = Effect {
+  val putTrue = Effect("putTrue") {
     state => 
       state.copy(output = state.output.+:(true))
   }
 
-  val putFalse = Effect {
+  val putFalse = Effect("putFalse") {
     state =>
       state.copy(output = state.output.+:(false))
   }
@@ -212,6 +218,12 @@ object JoyBool:
     input: BitVector = BitVector.empty,
     output: BitVector = BitVector.empty
   )
+
+  extension(ps: ProgramState)
+    def step: ProgramState = ps.exec match {
+      case Nil => ps // we must be done, no more state changes
+      case op :: tail => op.effect(ps.copy(exec = tail))
+    }
 
   def parse(bytes: ByteVector, library: Program = stdLibrary): Program = {
     @annotation.tailrec
