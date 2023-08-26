@@ -38,7 +38,9 @@ object JoyBool:
       }
       case (Effect(expg,g), Effect(expf,f)) => Effect(s"$expg $expf") {
         // execute f after g
-        state => g(state).flatMap(f(_))
+        // seem to need to lift g into IO to avoid stackoverflow
+        // this might be known as trapolining, not sure, but it seems to work
+        state => IO(g).flatMap(h => h(state)).flatMap(f(_))
       }
       case (Effect(exp,f), Quoted(a)) => Effect(s"$exp [$a]") {
         // execute f and then push Quoted(a) onto the stack
@@ -246,3 +248,4 @@ object JoyBool:
     }
     def fromValidBin(bin: String): Program = parse(BitVector.fromValidBin(bin))
     def apply(bin: String): Program = fromValidBin(bin)
+    def rand(numBytes: Int): Program = parse(ByteVector(scala.util.Random.nextBytes(numBytes)).bits)
