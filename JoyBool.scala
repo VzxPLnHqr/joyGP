@@ -10,7 +10,10 @@ object JoyBool:
   sealed trait Program {
     def expression: String
     def effect: ProgramState => IO[ProgramState]
-    override def toString = expression
+    override def toString = expression.size match {
+      case s if(s > 50) => expression.take(30) + s"... ${s-30} chars ..."
+      case _ => expression
+    }
     def apply(ps: ProgramState): IO[ProgramState] = effect(ps)
   }
   case class Quoted(p: Program) extends Program {
@@ -220,7 +223,11 @@ object JoyBool:
     exec: Stack[Program] = Nil,
     input: BitVector = BitVector.empty,
     output: BitVector = BitVector.empty
-  )
+  ) {
+    override def toString(): String =
+      val stackSize = exec.length
+      s"\nProgramState(\n \texec ($stackSize items)= ${exec.mkString.take(100)}... \n \tinput=$input \n \toutput=$output\n)"
+  }
 
   extension(ps: ProgramState)
     def step: IO[ProgramState] = ps.stepMany(1)
