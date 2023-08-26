@@ -1,5 +1,6 @@
 package joygp
 
+import cats.effect.IO
 import scodec.bits.{ByteVector,BitVector}
 
 object JoyBool:
@@ -8,28 +9,28 @@ object JoyBool:
 
   sealed trait Program {
     def expression: String
-    def effect: ProgramState => ProgramState
+    def effect: ProgramState => IO[ProgramState]
     override def toString = expression
-    def apply(ps: ProgramState): ProgramState = effect(ps)
+    def apply(ps: ProgramState): IO[ProgramState] = effect(ps)
   }
   case class Quoted(p: Program) extends Program {
 
     def expression: String = s"[$p]"
-    def effect: ProgramState => ProgramState =
+    def effect: ProgramState => IO[ProgramState] =
       // the effect of a quotation is to push itself onto the exec stack
-      state => state.copy(exec = Quoted(p) :: state.exec)
+      state => IO(state.copy(exec = Quoted(p) :: state.exec))
   }
-  case class Effect(expression: String, f: ProgramState => ProgramState) extends Program {
+  case class Effect(expression: String, f: ProgramState => IO[ProgramState]) extends Program {
     def effect = f
   }
-  def Effect(name: String)( f: ProgramState => ProgramState): Effect = Effect(name,f)
+  def Effect(name: String)( f: ProgramState => IO[ProgramState]): Effect = Effect(name,f)
 
   // define how programs combine (it's a monoid!)
   extension (lhs: Program)
     def +(rhs: Program): Program = (lhs,rhs) match {
       case (Quoted(b), Quoted(a)) => Effect(s"[$b] [$a]") {
         // quotations just get pushed onto stack
-        state => state.copy(exec = Quoted(a) :: Quoted(b) :: state.exec)
+        state => IO(state.copy(exec = Quoted(a) :: Quoted(b) :: state.exec))
       }
       case (Quoted(a), Effect(exp,f)) => Effect(s"[$a] $exp") {
         // try to execute the effect
@@ -37,19 +38,18 @@ object JoyBool:
       }
       case (Effect(expg,g), Effect(expf,f)) => Effect(s"$expg $expf") {
         // execute f after g
-        state => f(g(state))
+        state => g(state).flatMap(f(_))
       }
       case (Effect(exp,f), Quoted(a)) => Effect(s"$exp [$a]") {
         // execute f and then push Quoted(a) onto the stack
         state => 
-          val afterF = f(state)
-          afterF.copy(exec = Quoted(a) :: afterF.exec)
+          f(state).map(afterF => afterF.copy(exec = Quoted(a) :: afterF.exec))
       }
     }
 
   // define elementary programs
   // most of the names taken from: http://tunes.org/~iepos/joy.html#appendix
-  val id = Effect("")(state => state)
+  val id = Effect("")(state => IO(state))
 
   // nil == []
   val nil = Quoted(id)
@@ -58,14 +58,14 @@ object JoyBool:
     // [A] i == A
     state.exec match {
       case Quoted(a) :: tail => a.effect(state.copy(exec = tail))
-      case _ => state // noop
+      case _ => IO(state) // noop
     }
   }
   val k = Effect("k") { state =>
     // [B] [A] k    == A
     state.exec match {
       case Quoted(a) :: Quoted(b) :: tail => a.effect(state.copy(exec = tail))
-      case _ => state // noop for anything else
+      case _ => IO(state) // noop for anything else
     }
   }
 
@@ -73,31 +73,31 @@ object JoyBool:
     // [B] [A] z    == B
     state.exec match {
       case Quoted(a) :: Quoted(b) :: tail => b.effect(state.copy(exec = tail))
-      case _ => state // noop for anything else
+      case _ => IO(state) // noop for anything else
     }
   }
 
   val swap = Effect("swap") { state =>
     // [B] [A] swap == [A] [B]
     state.exec match {
-      case Quoted(a) :: Quoted(b) :: tail => state.copy(exec = Quoted(b) :: Quoted(a) :: tail)
-      case _ => state // noop
+      case Quoted(a) :: Quoted(b) :: tail => IO(state.copy(exec = Quoted(b) :: Quoted(a) :: tail))
+      case _ => IO(state) // noop
     }
   }
 
   val dup = Effect("dup") { state => 
     // [A] dup == [A] [A]
     state.exec match {
-      case Quoted(a) :: tail => state.copy(exec = Quoted(a) :: Quoted(a) :: tail)
-      case _ => state // noop
+      case Quoted(a) :: tail => IO(state.copy(exec = Quoted(a) :: Quoted(a) :: tail))
+      case _ => IO(state) // noop
     }  
   }
 
   val zap = Effect("zap") { state =>
     // [A] zap ==
     state.exec match {
-      case Quoted(a) :: tail => state.copy(exec = tail)
-      case _ => state // noop
+      case Quoted(a) :: tail => IO(state.copy(exec = tail))
+      case _ => IO(state) // noop
     }
 
   }
@@ -105,24 +105,24 @@ object JoyBool:
   val cat = Effect("cat") { state => 
     // [B] [A] cat == [B A]
     state.exec match {
-      case Quoted(a) :: Quoted(b) :: tail => state.copy(exec = Quoted(b + a) :: tail)
-      case _ => state // noop
+      case Quoted(a) :: Quoted(b) :: tail => IO(state.copy(exec = Quoted(b + a) :: tail))
+      case _ => IO(state) // noop
     }  
   }
 
   val cons = Effect("cons") { state => 
     // [B] [A] cons == [[B] A]
     state.exec match {
-      case Quoted(a) :: Quoted(b) :: tail => state.copy(exec = Quoted(Quoted(b) + a) :: tail)
-      case _ => state // noop
+      case Quoted(a) :: Quoted(b) :: tail => IO(state.copy(exec = Quoted(Quoted(b) + a) :: tail))
+      case _ => IO(state) // noop
     }
   }
 
   val unit = Effect("unit") { state => 
     // [A] unit == [[A]]
     state.exec match {
-      case Quoted(a) :: tail => state.copy(exec = Quoted(Quoted(a)) :: tail)
-      case _ => state // noop
+      case Quoted(a) :: tail => IO(state.copy(exec = Quoted(Quoted(a)) :: tail))
+      case _ => IO(state) // noop
     }
   }
 
@@ -130,9 +130,10 @@ object JoyBool:
     // [B] [A] dip == A [B]
     state.exec match {
       case Quoted(a) :: Quoted(b) :: tail => 
-        val afterA = a.effect(state.copy(exec = tail))
-        afterA.copy(exec = Quoted(b) :: afterA.exec)
-      case _ => state // noop
+        a.effect(state.copy(exec = tail)).map{ afterA =>
+          afterA.copy(exec = Quoted(b) :: afterA.exec)
+        }
+      case _ => IO(state) // noop
     }
   }
 
@@ -140,8 +141,8 @@ object JoyBool:
     // [B] [A] cake == [[B] A] [A [B]]
     state.exec match {
       case (Quoted(a) :: Quoted(b) :: tail) =>
-        state.copy(exec = Quoted(a + Quoted(b)) :: Quoted(Quoted(b) + a) :: tail)
-      case _ => state // noop
+        IO(state.copy(exec = Quoted(a + Quoted(b)) :: Quoted(Quoted(b) + a) :: tail))
+      case _ => IO(state) // noop
     }
   }
 
@@ -152,20 +153,20 @@ object JoyBool:
       // if it is 1, push Quoted(k) onto the stack
       // otherwise push Quoted(z) onto the stack
       state.input.headOption match {
-        case Some(true) => state.copy(exec = Quoted(k) :: state.exec, input = state.input.drop(1))
-        case Some(false) => state.copy(exec = Quoted(z) :: state.exec, input = state.input.drop(1))
-        case None => state // input is empty, therefore noop
+        case Some(true) => IO(state.copy(exec = Quoted(k) :: state.exec, input = state.input.drop(1)))
+        case Some(false) => IO(state.copy(exec = Quoted(z) :: state.exec, input = state.input.drop(1)))
+        case None => IO(state) // input is empty, therefore noop
       }
   }
 
   val putTrue = Effect("putTrue") {
     state => 
-      state.copy(output = state.output.+:(true))
+      IO(state.copy(output = state.output.+:(true)))
   }
 
   val putFalse = Effect("putFalse") {
     state =>
-      state.copy(output = state.output.+:(false))
+      IO(state.copy(output = state.output.+:(false)))
   }
 
   // construct a "library" as a binary tree of quoted programs
@@ -220,11 +221,11 @@ object JoyBool:
   )
 
   extension(ps: ProgramState)
-    def step: ProgramState = ps.stepMany(1)
-    def stepMany(steps: Long): ProgramState = ps.exec match {
-      case Nil => ps // we must be done, no more state changes
-      case op :: tail if(steps > 1) => op.effect(ps.copy(exec = tail)).stepMany(steps - 1)
-      case _ => ps
+    def step: IO[ProgramState] = ps.stepMany(1)
+    def stepMany(steps: Long): IO[ProgramState] = ps.exec match {
+      case Nil => IO(ps) // we must be done, no more state changes
+      case op :: tail if(steps > 1) => op.effect(ps.copy(exec = tail)).flatMap(_.stepMany(steps - 1))
+      case _ => IO(ps)
     }
   
   object Program:
