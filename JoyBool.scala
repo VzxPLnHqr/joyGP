@@ -7,19 +7,19 @@ object JoyBool:
   type Stack[T] = List[T]
 
   sealed trait Program {
-    def name: String
+    def expression: String
     def effect: ProgramState => ProgramState
-    override def toString = name
+    override def toString = expression
     def apply(ps: ProgramState): ProgramState = effect(ps)
   }
   case class Quoted(p: Program) extends Program {
 
-    def name: String = s"[$p]"
+    def expression: String = s"[$p]"
     def effect: ProgramState => ProgramState =
       // the effect of a quotation is to push itself onto the exec stack
       state => state.copy(exec = Quoted(p) :: state.exec)
   }
-  case class Effect(name: String, f: ProgramState => ProgramState) extends Program {
+  case class Effect(expression: String, f: ProgramState => ProgramState) extends Program {
     def effect = f
   }
   def Effect(name: String)( f: ProgramState => ProgramState): Effect = Effect(name,f)
@@ -31,15 +31,15 @@ object JoyBool:
         // quotations just get pushed onto stack
         state => state.copy(exec = Quoted(a) :: Quoted(b) :: state.exec)
       }
-      case (Quoted(a), Effect(name,f)) => Effect(s"[$a] $name") {
+      case (Quoted(a), Effect(exp,f)) => Effect(s"[$a] $exp") {
         // try to execute the effect
         state => f(state.copy(exec = Quoted(a) :: state.exec))
       }
-      case (Effect(nameg,g), Effect(namef,f)) => Effect(s"$nameg $namef") {
+      case (Effect(expg,g), Effect(expf,f)) => Effect(s"$expg $expf") {
         // execute f after g
         state => f(g(state))
       }
-      case (Effect(name,f), Quoted(a)) => Effect(s"$name [$a]") {
+      case (Effect(exp,f), Quoted(a)) => Effect(s"$exp [$a]") {
         // execute f and then push Quoted(a) onto the stack
         state => 
           val afterF = f(state)
@@ -171,7 +171,7 @@ object JoyBool:
   // construct a "library" as a binary tree of quoted programs
   // note: this is a naive implementation which requires an even number
   // of programs
-  def mkLibrary(leaves: List[Program]): Program = {
+  def mkLibrary(leaves: List[Program]): Quoted = {
     require(leaves.nonEmpty, "library must not be empty")
     //require(leaves.size % 2 == 0, "number of programs in library must be even")
 
@@ -220,19 +220,28 @@ object JoyBool:
   )
 
   extension(ps: ProgramState)
-    def step: ProgramState = ps.exec match {
+    def step: ProgramState = ps.stepMany(1)
+    def stepMany(steps: Long): ProgramState = ps.exec match {
       case Nil => ps // we must be done, no more state changes
-      case op :: tail => op.effect(ps.copy(exec = tail))
+      case op :: tail if(steps > 1) => op.effect(ps.copy(exec = tail)).stepMany(steps - 1)
+      case _ => ps
     }
-
-  def parse(bytes: ByteVector, library: Program = stdLibrary): Program = {
-    @annotation.tailrec
-    def inner(prog: Program, remaining: BitVector): Program = remaining.headOption match {
+  
+  object Program:
+    def parse(bits: BitVector, library: Quoted = stdLibrary): Program = {
+      @annotation.tailrec
+      def inner(prog: Program, remaining: BitVector): Program = remaining.headOption match {
+        case Some(bit) => inner(prog + fromBit(bit,library), remaining.drop(1))
+        case None => prog // we are done
+      }
+      inner(id,bits)
+    }
+    def parse(bytes: ByteVector): Program = parse(bytes.bits) 
+    def fromBit(bit: Boolean, library: Quoted): Program = bit match {
       // 1 == k
-      case Some(true) => inner(prog + k, remaining.drop(1))
+      case true => k
       // 0 == [library] [z] onto the stack
-      case Some(false) => inner(prog + library + Quoted(z), remaining.drop(1))
-      case None => prog // we are done
+      case false => library + Quoted(z)
     }
-    inner(id,bytes.bits)
-  }
+    def fromValidBin(bin: String): Program = parse(BitVector.fromValidBin(bin))
+    def apply(bin: String): Program = fromValidBin(bin)
