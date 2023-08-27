@@ -174,6 +174,10 @@ object JoyBool:
       IO(state.copy(output = state.output.+:(false)))
   }
 
+  val flush = Effect("flush") {
+    state => IO(state.copy(exec = Nil))
+  }
+
   // construct a "library" as a binary tree of quoted programs
   // note: this is a naive implementation which requires an even number
   // of programs
@@ -215,7 +219,8 @@ object JoyBool:
     nil,
     readBit,
     putTrue,
-    putFalse
+    putFalse,
+    flush // equivalent to halting
   ))
 
   final case class ProgramState(
@@ -236,6 +241,7 @@ object JoyBool:
       case op :: tail if(steps > 1) => op.effect(ps.copy(exec = tail)).flatMap(_.stepMany(steps - 1))
       case _ => IO(ps)
     }
+    def apply(prog: Program): IO[ProgramState] = prog(ps)
   
   object Program:
     def parse(bits: BitVector, library: Quoted = stdLibrary): Program = {
