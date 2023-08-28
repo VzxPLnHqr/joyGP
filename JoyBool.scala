@@ -26,7 +26,7 @@ object JoyBool:
   case class Effect(expression: String, f: ProgramState => IO[ProgramState]) extends Program {
     def effect = f
   }
-  def Effect(name: String)( f: ProgramState => IO[ProgramState]): Effect = Effect(name,f)
+  def Effect(name: String)( f: ProgramState => IO[ProgramState]): Effect = Effect("",f)
 
   // define how programs combine (it's a monoid!)
   extension (lhs: Program)
@@ -158,20 +158,22 @@ object JoyBool:
       // if it is 1, push Quoted(k) onto the stack
       // otherwise push Quoted(z) onto the stack
       state.input.headOption match {
-        case Some(true) => IO(state.copy(exec = Quoted(k) :: state.exec, input = state.input.drop(1)))
-        case Some(false) => IO(state.copy(exec = Quoted(z) :: state.exec, input = state.input.drop(1)))
+        case Some(true) => IO(state.copy(exec = Quoted(k) :: state.exec, input = state.input.tail))
+        case Some(false) => IO(state.copy(exec = Quoted(z) :: state.exec, input = state.input.tail))
         case None => IO(state) // input is empty, therefore noop
       }
   }
 
   val putTrue = Effect("putTrue") {
-    state => 
-      IO(state.copy(output = state.output.+:(true)))
+    state =>
+      IO(state.copy(output = true :: state.output))
+      // IO(state.copy(output = BitVector.one ++ state.output))
   }
 
   val putFalse = Effect("putFalse") {
     state =>
-      IO(state.copy(output = state.output.+:(false)))
+      IO(state.copy(output = false :: state.output))
+      // IO(state.copy(output = BitVector.zero ++ state.output))
   }
 
   val flush = Effect("flush") {
@@ -226,8 +228,8 @@ object JoyBool:
   final case class ProgramState(
     // exec always contains the remaining code to be executed
     exec: Stack[Program] = Nil,
-    input: BitVector = BitVector.empty,
-    output: BitVector = BitVector.empty
+    input: List[Boolean] = List(), //BitVector.empty,
+    output: List[Boolean] = List() //BitVector.empty
   ) {
     override def toString(): String =
       val stackSize = exec.length
