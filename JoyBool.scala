@@ -157,15 +157,10 @@ object JoyBool:
       // pop the next bit from the input
       // if it is 1, push Quoted(k) onto the stack
       // otherwise push Quoted(z) onto the stack
-      /*state.input.bits.headOption match {
-        case Some(true) => IO(state.copy(exec = Quoted(k) :: state.exec, input = state.input.bits.tail.bytes))
-        case Some(false) => IO(state.copy(exec = Quoted(z) :: state.exec, input = state.input.bits.tail.bytes))
-        case None => IO(state) // input is empty, therefore noop
-      }*/
-      IO(state.input.bits).flatMap{ 
+      IO(state.input).flatMap{ 
         bits => bits.headOption match {
-          case Some(true) => IO(state.copy(exec = Quoted(k) :: state.exec, input = bits.tail.bytes))
-          case Some(false) => IO(state.copy(exec = Quoted(z) :: state.exec, input = bits.tail.bytes))
+          case Some(true) => IO(state.copy(exec = Quoted(k) :: state.exec, input = bits.tail.compact))
+          case Some(false) => IO(state.copy(exec = Quoted(z) :: state.exec, input = bits.tail.compact))
           case None => IO(state) // input is empty, therefore noop
         }
       }
@@ -175,14 +170,14 @@ object JoyBool:
     state =>
       //IO(state.copy(output = true :: state.output))
       // IO(state.copy(output = BitVector.one ++ state.output))
-      IO(state.copy(output = (BitVector.one ++ state.output.bits).bytes))
+      IO(state.copy(output = (BitVector.one ++ state.output).compact))
   }
 
   val putFalse = Effect("putFalse") {
     state =>
       //IO(state.copy(output = false :: state.output))
       // IO(state.copy(output = BitVector.zero ++ state.output))
-      IO(state.copy(output = (BitVector.zero ++ state.output.bits).bytes))
+      IO(state.copy(output = (BitVector.zero ++ state.output).compact))
   }
 
   val flush = Effect("flush") {
@@ -237,8 +232,8 @@ object JoyBool:
   final case class ProgramState(
     // exec always contains the remaining code to be executed
     exec: Stack[Program] = Nil,
-    input: ByteVector = ByteVector.empty,
-    output: ByteVector = ByteVector.empty
+    input: BitVector = BitVector.empty,
+    output: BitVector = BitVector.empty
   ) {
     override def toString(): String =
       val stackSize = exec.length
