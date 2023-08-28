@@ -8,47 +8,58 @@ object JoyBool:
   type Stack[T] = List[T]
 
   sealed trait Program {
-    def expression: String
+    def expression: Option[String] = None
     def effect: ProgramState => IO[ProgramState]
-    override def toString = expression.size match {
+    /*override def toString = expression.size match {
       case s if(s > 50) => expression.take(30) + s"... ${s-30} chars ..."
       case _ => expression
+    }*/
+    override def toString = this match {
+      case Quoted(p) => "[" + p + "]"
+      case p: Program => p.expression match {
+        case None => "_" // anonymous expression
+        case Some(expr) => expr
+      }
     }
     def apply(ps: ProgramState): IO[ProgramState] = effect(ps)
   }
   case class Quoted(p: Program) extends Program {
 
-    def expression: String = s"[$p]"
+    override def expression: Option[String] = p.expression.map("[" + _ + "]")
     def effect: ProgramState => IO[ProgramState] =
       // the effect of a quotation is to push itself onto the exec stack
       state => IO(state.copy(exec = Quoted(p) :: state.exec))
   }
-  case class Effect(expression: String, f: ProgramState => IO[ProgramState]) extends Program {
+  def Effect(f: ProgramState => IO[ProgramState]): Program = new Program {
+    def effect: ProgramState => IO[ProgramState] = f
+  }
+
+  def Effect(name: String)( f: ProgramState => IO[ProgramState]): Program = new Program {
+    override def expression: Option[String] = Some(name)
     def effect = f
   }
-  def Effect(name: String)( f: ProgramState => IO[ProgramState]): Effect = Effect("",f)
 
   object Program:
     // programs are a monoid!
     def combine(lhs: Program, rhs: Program): Program = (lhs,rhs) match {
-      case (Quoted(b), Quoted(a)) => Effect(s"[$b] [$a]") {
+      case (Quoted(b), Quoted(a)) => Effect {
         // quotations just get pushed onto stack
         state => IO(state.copy(exec = Quoted(a) :: Quoted(b) :: state.exec))
       }
-      case (Quoted(a), Effect(exp,f)) => Effect(s"[$a] $exp") {
+      case (Quoted(a), p: Program) => Effect{
         // try to execute the effect
-        state => f(state.copy(exec = Quoted(a) :: state.exec))
+        state => p.effect(state.copy(exec = Quoted(a) :: state.exec))
       }
-      case (Effect(expg,g), Effect(expf,f)) => Effect(s"$expg $expf") {
-        // execute f after g
-        // seem to need to lift g into IO to avoid stackoverflow
-        // this might be known as trapolining, not sure, but it seems to work
-        state => IO(g).flatMap(h => h(state)).flatMap(f(_))
-      }
-      case (Effect(exp,f), Quoted(a)) => Effect(s"$exp [$a]") {
+      case (f:Program, Quoted(a)) => Effect {
         // execute f and then push Quoted(a) onto the stack
         state => 
           f(state).map(afterF => afterF.copy(exec = Quoted(a) :: afterF.exec))
+      }
+      case (g:Program, f:Program) => Effect{
+        // execute f after g
+        // seem to need to lift g into IO to avoid stackoverflow
+        // this might be known as trapolining, not sure, but it seems to work
+        state => IO(g).flatMap(_.effect(state)).flatMap(ps => f.effect(ps))
       }
     }
     def parse(bits: BitVector, library: Quoted = stdLibrary): Program = {
@@ -267,5 +278,5 @@ object JoyBool:
     readBit,
     putTrue,
     putFalse,
-    flush // equivalent to halting
+    //flush // equivalent to halting
   ))
