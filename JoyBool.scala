@@ -8,24 +8,10 @@ object JoyBool:
   type Stack[T] = List[T]
 
   sealed trait Program {
-    def expression: Option[String] = None
     def effect: ProgramState => IO[ProgramState]
-    /*override def toString = expression.size match {
-      case s if(s > 50) => expression.take(30) + s"... ${s-30} chars ..."
-      case _ => expression
-    }*/
-    override def toString = this match {
-      case Quoted(p) => "[" + p + "]"
-      case p: Program => p.expression match {
-        case None => "_" // anonymous expression
-        case Some(expr) => expr
-      }
-    }
     def apply(ps: ProgramState): IO[ProgramState] = effect(ps)
   }
   case class Quoted(p: Program) extends Program {
-
-    override def expression: Option[String] = p.expression.map("[" + _ + "]")
     def effect: ProgramState => IO[ProgramState] =
       // the effect of a quotation is to push itself onto the exec stack
       state => IO(state.copy(exec = Quoted(p) :: state.exec))
@@ -35,7 +21,6 @@ object JoyBool:
   }
 
   def Effect(name: String)( f: ProgramState => IO[ProgramState]): Program = new Program {
-    override def expression: Option[String] = Some(name)
     def effect = f
   }
 
@@ -92,7 +77,7 @@ object JoyBool:
   ) {
     override def toString(): String =
       val stackSize = exec.length
-      s"\nProgramState(\n \texec ($stackSize items)= ${exec.mkString.take(100)}... \n \tinput=$input \n \toutput=$output\n)"
+      s"\nProgramState(\n \texec ($stackSize items)= ... \n \tinput=$input \n \toutput=$output\n)"
   }
 
   extension(ps: ProgramState)
@@ -278,5 +263,5 @@ object JoyBool:
     readBit,
     putTrue,
     putFalse,
-    //flush // equivalent to halting
+    flush // equivalent to halting
   ))
