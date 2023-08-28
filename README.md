@@ -14,7 +14,7 @@ Push-forth, to be used as the genome encoding format for genetic programming.
 * Programs in JoyGP operate on stacks. 
 * There is a stack for each allowed datatype.
 * Programs are composed of smaller programs.  The smallest programs are elementary operations.
-* If an operation expects a value from a stack, and the stack is empty, the execution program expects a value from a stack, and the stack is empty, we just skip it!
+* If an operation expects a value from a stack, and the stack is empty, we just skip it (a `no_op`)!
 
 ##### Acknowledgement
 
