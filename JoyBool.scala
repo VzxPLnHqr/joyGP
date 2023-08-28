@@ -28,9 +28,9 @@ object JoyBool:
   }
   def Effect(name: String)( f: ProgramState => IO[ProgramState]): Effect = Effect("",f)
 
-  // define how programs combine (it's a monoid!)
-  extension (lhs: Program)
-    def +(rhs: Program): Program = (lhs,rhs) match {
+  object Program:
+    // programs are a monoid!
+    def combine(lhs: Program, rhs: Program): Program = (lhs,rhs) match {
       case (Quoted(b), Quoted(a)) => Effect(s"[$b] [$a]") {
         // quotations just get pushed onto stack
         state => IO(state.copy(exec = Quoted(a) :: Quoted(b) :: state.exec))
@@ -51,6 +51,47 @@ object JoyBool:
           f(state).map(afterF => afterF.copy(exec = Quoted(a) :: afterF.exec))
       }
     }
+    def parse(bits: BitVector, library: Quoted = stdLibrary): Program = {
+      @annotation.tailrec
+      def inner(prog: Program, remaining: BitVector): Program = remaining.headOption match {
+        case Some(bit) => inner(prog + fromBit(bit,library), remaining.drop(1))
+        case None => prog // we are done
+      }
+      inner(id,bits)
+    }
+    def parse(bytes: ByteVector): Program = parse(bytes.bits) 
+    def fromBit(bit: Boolean, library: Quoted): Program = bit match {
+      // 1 == k
+      case true => k
+      // 0 == [library] [z] onto the stack
+      case false => library + Quoted(z)
+    }
+    def fromValidBin(bin: String): Program = parse(BitVector.fromValidBin(bin))
+    def apply(bin: String): Program = fromValidBin(bin)
+    def rand(numBytes: Int): Program = parse(ByteVector(scala.util.Random.nextBytes(numBytes)).bits)
+
+  extension (lhs: Program)
+    def +(rhs: Program): Program = Program.combine(lhs,rhs)
+  
+  final case class ProgramState(
+    // exec always contains the remaining code to be executed
+    exec: Stack[Program] = Nil,
+    input: BitVector = BitVector.empty,
+    output: BitVector = BitVector.empty
+  ) {
+    override def toString(): String =
+      val stackSize = exec.length
+      s"\nProgramState(\n \texec ($stackSize items)= ${exec.mkString.take(100)}... \n \tinput=$input \n \toutput=$output\n)"
+  }
+
+  extension(ps: ProgramState)
+    def step: IO[ProgramState] = ps.stepMany(1)
+    def stepMany(steps: Long): IO[ProgramState] = ps.exec match {
+      case Nil => IO(ps) // we must be done, no more state changes
+      case op :: tail if(steps > 1) => op.effect(ps.copy(exec = tail)).flatMap(_.stepMany(steps - 1))
+      case _ => IO(ps)
+    }
+    def apply(prog: Program): IO[ProgramState] = prog(ps)
 
   // define elementary programs
   // most of the names taken from: http://tunes.org/~iepos/joy.html#appendix
@@ -228,43 +269,3 @@ object JoyBool:
     putFalse,
     flush // equivalent to halting
   ))
-
-  final case class ProgramState(
-    // exec always contains the remaining code to be executed
-    exec: Stack[Program] = Nil,
-    input: BitVector = BitVector.empty,
-    output: BitVector = BitVector.empty
-  ) {
-    override def toString(): String =
-      val stackSize = exec.length
-      s"\nProgramState(\n \texec ($stackSize items)= ${exec.mkString.take(100)}... \n \tinput=$input \n \toutput=$output\n)"
-  }
-
-  extension(ps: ProgramState)
-    def step: IO[ProgramState] = ps.stepMany(1)
-    def stepMany(steps: Long): IO[ProgramState] = ps.exec match {
-      case Nil => IO(ps) // we must be done, no more state changes
-      case op :: tail if(steps > 1) => op.effect(ps.copy(exec = tail)).flatMap(_.stepMany(steps - 1))
-      case _ => IO(ps)
-    }
-    def apply(prog: Program): IO[ProgramState] = prog(ps)
-  
-  object Program:
-    def parse(bits: BitVector, library: Quoted = stdLibrary): Program = {
-      @annotation.tailrec
-      def inner(prog: Program, remaining: BitVector): Program = remaining.headOption match {
-        case Some(bit) => inner(prog + fromBit(bit,library), remaining.drop(1))
-        case None => prog // we are done
-      }
-      inner(id,bits)
-    }
-    def parse(bytes: ByteVector): Program = parse(bytes.bits) 
-    def fromBit(bit: Boolean, library: Quoted): Program = bit match {
-      // 1 == k
-      case true => k
-      // 0 == [library] [z] onto the stack
-      case false => library + Quoted(z)
-    }
-    def fromValidBin(bin: String): Program = parse(BitVector.fromValidBin(bin))
-    def apply(bin: String): Program = fromValidBin(bin)
-    def rand(numBytes: Int): Program = parse(ByteVector(scala.util.Random.nextBytes(numBytes)).bits)
