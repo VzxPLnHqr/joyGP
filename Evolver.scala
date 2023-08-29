@@ -102,18 +102,16 @@ object Evolver {
         } yield bits
 
     /**
-     * naive mutation where probability of a byte mutating is proportional
+     * naive mutation
      * to the length of the gnome */
     def mutate(input: BitVector)(implicit random: std.Random[IO]): IO[BitVector] = {
         val size = input.size
-        val probOfMutation = if(input.size == 0) 0 else 1.0 / input.size.toDouble
+        val probOfMutation = 0.01 // FIXME, just a fixed percentage for now
         val numBitsToMutate = (probOfMutation * input.size).ceil.toInt
         val indices = (0 until numBitsToMutate).toList.traverse(i => random.betweenLong(0,size+1))
         indices.map(_.foldLeft(input){
             (accum, i) => flipBit(accum,i)
         })
-        // note: this does not allow for a mutation to "delete" a byte, but it probably should
-        //IO(input).map(_.toArray.toList).flatMap(_.parTraverse(b => mutateByte(probOfMutation,b)).map(ByteVector(_)))
     }
     def flipBit(bits: BitVector, i: Long): BitVector = bits.get(i) match {
         case true => bits.clear(i)
