@@ -42,6 +42,23 @@ object Evolver {
                 }
     } yield newPop
 
+    def evolveN[A](fitness: A => IO[BigInt])
+                  (startingPop: List[BitVector], numGenerations: Int, printEvery: Int = 10)
+                  (implicit genetic: Genetic[A], randomIO: std.Random[IO]): IO[List[BitVector]] = for {
+                    _ <- IO.unit
+                    evolveOnce = (cur_pop:List[BitVector]) => iterateOnce(fitness)(cur_pop, newPopSize = 100)(genetic,randomIO)
+                    finalPop <- (1 to numGenerations).toList.foldLeftM(startingPop){
+                        case (newPop, i) => if( i % printEvery == 0) {
+                            evolveOnce(newPop).flatTap(_ => printGenerationSummary(newPop,i).start)
+                        } else {
+                            evolveOnce(newPop)
+                        }
+                    }
+                  } yield finalPop
+
+    def printGenerationSummary(pop: List[BitVector], generationNumber: Int): IO[Unit] =
+        IO.println(s"======= Generation $generationNumber ==========")
+
     /**
       * select a random big integer
       * (currently uses scala.util.Random)
