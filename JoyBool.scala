@@ -66,6 +66,10 @@ object JoyBool:
     def apply(bin: String): Program = fromValidBin(bin)
     def rand(numBytes: Int): Program = parse(ByteVector(scala.util.Random.nextBytes(numBytes)).bits)
 
+    given geneticJoyBool: Genetic[Program] with {
+      def fromBits(genome: BitVector): Program = Program.parse(genome,stdLibrary)
+    }
+
   extension (lhs: Program)
     def +(rhs: Program): Program = Program.combine(lhs,rhs)
   
@@ -265,3 +269,4 @@ object JoyBool:
     putFalse,
     flush // equivalent to halting
   ))
+    
