@@ -62,6 +62,7 @@ object JoyBool:
       // 0 == [library] [z] onto the stack
       case false => library + Quoted(z)
     }
+    def fromValidHex(hex: String): Program = parse(BitVector.fromValidHex(hex))
     def fromValidBin(bin: String): Program = parse(BitVector.fromValidBin(bin))
     def apply(bin: String): Program = fromValidBin(bin)
     def rand(numBytes: Int): Program = parse(ByteVector(scala.util.Random.nextBytes(numBytes)).bits)
@@ -198,10 +199,10 @@ object JoyBool:
       // pop the next bit from the input
       // if it is 1, push Quoted(k) onto the stack
       // otherwise push Quoted(z) onto the stack
-      IO(state.input).flatMap{ 
-        bits => bits.headOption match {
-          case Some(true) => IO(state.copy(exec = Quoted(k) :: state.exec, input = bits.tail.compact))
-          case Some(false) => IO(state.copy(exec = Quoted(z) :: state.exec, input = bits.tail.compact))
+      IO(state).flatMap{ ps =>
+        ps.input.headOption match {
+          case Some(true) => IO(ps.copy(exec = Quoted(k) :: state.exec, input = ps.input.tail.compact))
+          case Some(false) => IO(ps.copy(exec = Quoted(z) :: state.exec, input = ps.input.tail.compact))
           case None => IO(state) // input is empty, therefore noop
         }
       }
