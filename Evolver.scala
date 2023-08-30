@@ -10,21 +10,23 @@ import scodec.bits._
 import spire.math._
 
 object Evolver {
-    def iterateOnce[A](fitness: A => IO[BigInt])
-                  (currentPop: List[BitVector], newPopSize: Int)
-                  (implicit genetic: Genetic[A], randomIO: std.Random[IO]): IO[List[BitVector]] = for {
-        
-        // apply fitness function to each member of population
-        // returns List[A,BigInt]
-        scoredPop <- currentPop.parTraverse{ 
-                        candidate_bytes => for {
-                            repr <- IO(genetic.fromBits(candidate_bytes))
-                            score <- fitness(repr)
-                        } yield (candidate_bytes,score)
-                    }
+    final case class ScoredIndividual(indiv: BitVector, score: BigInt) {
+        override def toString = s"ScoredIndividual($score), ${indiv.toHex})"
+    }
 
-        medianScore <- IO(scoredPop).map(_.map(_._2).sorted).map(_.apply(currentPop.size / 2 - 1))
-        _ <- IO.println(s"******Median score: $medianScore")
+    /** apply fitness function to each member of population */
+    def scorePop[A](pop: List[BitVector], fitness: A => IO[BigInt])
+                    (implicit genetic: Genetic[A]): IO[List[ScoredIndividual]] = 
+                        pop.parTraverse{ 
+                            candidate_bytes => for {
+                                repr <- IO(genetic.fromBits(candidate_bytes))
+                                score <- fitness(repr)
+                            } yield ScoredIndividual(candidate_bytes,score)
+                        }
+
+    def iterateOnce[A](fitness: A => IO[BigInt])
+                  (scoredPop: List[ScoredIndividual], newPopSize: Int)
+                  (implicit genetic: Genetic[A], randomIO: std.Random[IO]): IO[List[ScoredIndividual]] = for {
 
         // now build a new population by sampling from the old one
         // predetermined/fixed population size
@@ -32,21 +34,22 @@ object Evolver {
                     i => (for {
                         parents <- sampleFromWeightedList(scoredPop)(randomIO)
                                         .both(sampleFromWeightedList(scoredPop)(randomIO))
-                        crossed <- crossover(parents._1._1,parents._2._1)(randomIO)
+                        crossed <- crossover(parents._1.indiv,parents._2.indiv)(randomIO)
                         mutated <- mutate(crossed)(randomIO)
                         score <- IO(genetic.fromBits(mutated)).flatMap(repr => fitness(repr))
                         //improvement <- IO.println(score - medianScore)
                         // select the fittest between the mutant and the parents
-                        //selected <- IO(List((parents._1._1, parents._1._2), (parents._2._1, parents._2._2), (mutated,score))).map(_.maxBy(_._2))
-                    } yield (mutated,score)).iterateUntil(_._2 >= medianScore).map(_._1)
+                        selected <- IO(List(parents._1, parents._2, ScoredIndividual(mutated,score))).map(_.maxBy(_.score))
+                    } yield selected)
+                    //} yield (mutated,score)).iterateUntil(_._2 >= medianScore).map(_._1)
                 }
     } yield newPop
 
     def evolveN[A](fitness: A => IO[BigInt])
-                  (startingPop: List[BitVector], numGenerations: Int, printEvery: Int = 10)
-                  (implicit genetic: Genetic[A], randomIO: std.Random[IO]): IO[List[BitVector]] = for {
+                  (startingPop: List[ScoredIndividual], numGenerations: Int, printEvery: Int = 10)
+                  (implicit genetic: Genetic[A], randomIO: std.Random[IO]): IO[List[ScoredIndividual]] = for {
                     _ <- IO.unit
-                    evolveOnce = (cur_pop:List[BitVector]) => iterateOnce(fitness)(cur_pop, newPopSize = 100)(genetic,randomIO)
+                    evolveOnce = (cur_pop:List[ScoredIndividual]) => iterateOnce(fitness)(cur_pop, newPopSize = 100)(genetic,randomIO)
                     finalPop <- (1 to numGenerations).toList.foldLeftM(startingPop){
                         case (newPop, i) => if( i % printEvery == 0) {
                             evolveOnce(newPop).flatTap(_ => printGenerationSummary(newPop,i).start)
@@ -56,8 +59,16 @@ object Evolver {
                     }
                   } yield finalPop
 
-    def printGenerationSummary(pop: List[BitVector], generationNumber: Int): IO[Unit] =
-        IO.println(s"======= Generation $generationNumber ==========")
+    def printGenerationSummary(scoredSortedPop: List[ScoredIndividual], generationNumber: Int): IO[Unit] = for {
+        _ <- IO.println(s"======= Generation $generationNumber ==========")
+        topCandidate <- IO(scoredSortedPop.lastOption)
+        medianScore <- IO(scoredSortedPop.map(_.score)).map(_.apply(scoredSortedPop.size / 2 - 1))
+        diff <- IO(topCandidate.map(_.score - medianScore) match { case None => -1; case Some(v) => v})
+        _ <- IO.println(s"******Median score: $medianScore")
+        _ <- IO.println(s"********Best Score: ${topCandidate.map(_.score)} ($diff)")
+        _ <- IO.println(s"********* Best: ${topCandidate.map(_.indiv.toHex)})")
+    } yield ()
+        
 
     /**
       * select a random big integer
@@ -87,19 +98,19 @@ object Evolver {
       * @param pop
       * @return
       */
-    def sampleFromWeightedList[A]( pop: List[(A,BigInt)])
-                                 (implicit randomIO: std.Random[IO]): IO[(A,BigInt)] =
-        pop.foldLeftM((BigInt(0),Option.empty[(A,BigInt)])){ 
-            case ((accum_score, incumbent), (candidate, candidate_score)) => 
+    def sampleFromWeightedList[A]( scoredPop: List[ScoredIndividual])
+                                 (implicit randomIO: std.Random[IO]): IO[ScoredIndividual] =
+        scoredPop.foldLeftM((BigInt(0),Option.empty[ScoredIndividual])){ 
+            case ((accum_score, incumbent), candidate) => 
                 for {
-                    new_accum_score <- IO(accum_score + candidate_score)
+                    new_accum_score <- IO(accum_score + candidate.score)
                     winner <- if(new_accum_score == 0)
-                                IO(Some((candidate,candidate_score)))
+                                IO(Some(candidate))
                               else
                                 betweenBigInt(0, new_accum_score)
-                                .map(_ < candidate_score)
+                                .map(_ < candidate.score)
                                 .ifM(
-                                    ifTrue = IO(Some((candidate,candidate_score))),
+                                    ifTrue = IO(Some(candidate)),
                                     ifFalse = IO(incumbent)
                                 )
                 } yield (new_accum_score, winner)
@@ -125,7 +136,7 @@ object Evolver {
         val size = input.size
         val probOfMutation = 0.01 // FIXME, just a fixed percentage for now
         val numBitsToMutate = (probOfMutation * input.size).ceil.toInt
-        val indices = (0 until numBitsToMutate).toList.traverse(i => random.betweenLong(0,size+1))
+        val indices = (0 until numBitsToMutate).toList.traverse(i => random.betweenLong(0,size))
         indices.map(_.foldLeft(input){
             (accum, i) => flipBit(accum,i)
         })
