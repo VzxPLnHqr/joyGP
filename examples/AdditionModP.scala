@@ -69,9 +69,9 @@ trait AdditionModP:
                             Int.MaxValue // if size is incorrect, maximum penalty!
     List(
       BigInt(Int.MaxValue - execStackSizeDiff),
-      1000*BigInt(Int.MaxValue - inputStackSizeDiff),
+      BigInt(Int.MaxValue - inputStackSizeDiff),
       BigInt(Int.MaxValue - outputSizeDiff),
-      BigInt(Int.MaxValue - outputValueDiff)
+      2*BigInt(Int.MaxValue - outputValueDiff)
     ).sum
   }
 
@@ -89,10 +89,10 @@ trait AdditionModP:
   }
 
   // evolve n generations
-  def evolve(n: Int, printEvery: Int = 10, maxTarget: Option[BigInt] = None):IO[List[ScoredIndividual]] = for { 
+  def evolve(n: Int, numParallel: Int, printEvery: Int = 10, maxTarget: Option[BigInt] = None):IO[List[ScoredIndividual]] = for { 
       rand <- randomIO
       pop <- startingPop
-      evolvedPop <- Evolver.evolveN(fitness)(pop,n,printEvery,maxTarget)(Program.geneticJoyBool,rand)
+      evolvedPop <- Evolver.evolveN(fitness)(pop,n,numParallel, printEvery,maxTarget)(Program.geneticJoyBool,rand)
   } yield evolvedPop
 
   def test(candidate: Program, numTests:Int = numTestCases): IO[Unit] = for {
@@ -108,3 +108,7 @@ trait AdditionModP:
     )
 
   } yield ()
+
+  def hamming(lhs: Int, rhs: Int): Int = java.lang.Integer.bitCount(lhs ^ rhs)
+  extension(i: Int)
+    def bitCount: Int = java.lang.Integer.bitCount(i)
