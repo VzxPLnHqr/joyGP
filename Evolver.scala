@@ -11,9 +11,9 @@ import spire.math._
 
 object Evolver {
     final case class ScoredIndividual(indiv: BitVector, score: BigInt) {
-        override def toString = s"ScoredIndividual($score), ${indiv.toHex})"
+        override def toString = s"ScoredIndividual($score, ${indiv.toHex})"
     }
-
+    
     /** apply fitness function to each member of population */
     def scorePop[A](pop: List[BitVector], fitness: A => IO[BigInt])
                     (implicit genetic: Genetic[A]): IO[List[ScoredIndividual]] = 
@@ -66,13 +66,15 @@ object Evolver {
         _ <- IO.println(s"*****Pop size: ${scoredPop.size}")
         _ <- IO.println(s"******Target score: $maxTarget")
         topCandidate <- IO(scoredPop.maxBy(_.score))
+        longestCandidate <- IO(scoredPop.maxBy(_.indiv.length))
         medianScore <- IO(scoredPop.map(_.score)).map(_.apply(scoredPop.size / 2 - 1))
         diffFromMedian <- IO(topCandidate.score - medianScore)
         possibleImprovement <- IO(maxTarget).map(_.map(_ - topCandidate.score))
         _ <- IO.println(s"******Median score: $medianScore")
         _ <- IO.println(s"********Best Score: ${topCandidate.score} ($diffFromMedian from median)")
         _ <- IO.println(s"*********Possible Improvement: $possibleImprovement")
-        _ <- IO.println(s"********* Best: ${topCandidate.indiv.toHex}")
+        _ <- IO.println(s"*******Longest (${longestCandidate.indiv.size} bits)")
+        _ <- IO.println(s"********* Best (${topCandidate.indiv.size} bits): ${topCandidate.indiv.toHex}")
     } yield ()
         
 
@@ -157,6 +159,29 @@ object Evolver {
                 case true => random.nextBytes(1).map(_.head)
                 case false => IO(b)
     }
+
+    /** race a list of IOs and return first
+     * source: https://github.com/paul-snively/easyracer/commit/0642a62131e9127b28f32d781913b366539601e0#diff-9676066bc2a39fc2e916043cdb6c565c7ddce8fb8d85c17ea44dd7b2d193a6b6R94
+     * // Fabio Labella's multiRace.
+     * */
+    def multiRace[F[_]: Concurrent, A](fas: List[F[A]]): F[A] = {
+        def spawn[B](fa: F[B]): Resource[F, Unit] =
+        Resource.make(fa.start)(_.cancel).void
+
+        def finish(fa: F[A], d: Deferred[F, Either[Throwable, A]]): F[Unit] =
+        fa.attempt.flatMap(d.complete).void
+
+        Deferred[F, Either[Throwable, A]]
+        .flatMap { result =>
+            fas
+            .traverse(fa => spawn(finish(fa, result)))
+            .use(_ => result.get.rethrow)
+        }
+    }
+    
+    extension[F[_],A](effect: F[A])(using Concurrent[F])
+        /** replicate `n` times and take first result **/
+        def raceN(n: Int): F[A] = multiRace(List.fill(n)(effect))
 }
 
 
