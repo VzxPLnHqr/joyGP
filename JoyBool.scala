@@ -8,10 +8,13 @@ object JoyBool:
   type Stack[T] = List[T]
 
   sealed trait Program {
+    /** the "size" of the program **/
+    def size: Long = 1 // all programs have size 1 unless overridden
     def effect: ProgramState => IO[ProgramState]
     def apply(ps: ProgramState): IO[ProgramState] = effect(ps)
   }
   case class Quoted(p: Program) extends Program {
+    override def size = p.size + 1 // add 1 to the quoted program
     def effect: ProgramState => IO[ProgramState] =
       // the effect of a quotation is to push itself onto the exec stack
       state => IO(state.copy(exec = Quoted(p) :: state.exec))
@@ -27,24 +30,29 @@ object JoyBool:
   object Program:
     // programs are a monoid!
     def combine(lhs: Program, rhs: Program): Program = (lhs,rhs) match {
-      case (Quoted(b), Quoted(a)) => Effect {
+      case (Quoted(b), Quoted(a)) => new Program {
+        override def size = (b.size + 1) + (a.size + 1)
         // quotations just get pushed onto stack
-        state => IO(state.copy(exec = Quoted(a) :: Quoted(b) :: state.exec))
+        def effect = state => IO(state.copy(exec = Quoted(a) :: Quoted(b) :: state.exec))
       }
-      case (Quoted(a), p: Program) => Effect{
+      case (Quoted(a), p: Program) => new Program{
+        override def size = Quoted(a).size + p.size
         // try to execute the effect
-        state => p.effect(state.copy(exec = Quoted(a) :: state.exec))
+        def effect = state => p.effect(state.copy(exec = Quoted(a) :: state.exec))
       }
-      case (f:Program, Quoted(a)) => Effect {
+      case (f:Program, Quoted(a)) => new Program {
+        override def size: Long = f.size + Quoted(a).size
         // execute f and then push Quoted(a) onto the stack
-        state => 
-          f(state).map(afterF => afterF.copy(exec = Quoted(a) :: afterF.exec))
+        def effect = 
+          state => 
+            f(state).map(afterF => afterF.copy(exec = Quoted(a) :: afterF.exec))
       }
-      case (g:Program, f:Program) => Effect{
+      case (g:Program, f:Program) => new Program {
         // execute f after g
         // seem to need to lift g into IO to avoid stackoverflow
         // this might be known as trapolining, not sure, but it seems to work
-        state => IO(g).flatMap(_.effect(state)).flatMap(ps => f.effect(ps))
+        def effect = state => IO(g).flatMap(_.effect(state)).flatMap(ps => f.effect(ps))
+        override def size: Long = g.size + f.size
       }
     }
     def parse(bits: BitVector, library: Quoted = stdLibrary): Program = {
@@ -96,7 +104,11 @@ object JoyBool:
 
   // define elementary programs
   // most of the names taken from: http://tunes.org/~iepos/joy.html#appendix
-  val id = Effect("")(state => IO(state))
+  /** the "empty" program (a no-op) **/
+  val id = new Program {
+    override def size = 0 // empty program has zero size
+    def effect: ProgramState => IO[ProgramState] = state => IO(state)
+  }
 
   // nil == []
   val nil = Quoted(id)
