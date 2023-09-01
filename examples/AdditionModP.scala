@@ -66,7 +66,7 @@ trait AdditionModP:
     val outputValueDiff = if(outputSizeDiff == 0)
                             math.abs(expected.output.toInt() - candidate.output.toInt())
                           else
-                            Int.MaxValue - 1 // if size is incorrect, maximum penalty, but less 1 to avoid neg infinity
+                            Int.MaxValue + 1 // if size is incorrect, maximum penalty, but less 1 to avoid neg infinity
     List(
       math.log(Int.MaxValue.toDouble - execStackSizeDiff),
       math.log(Int.MaxValue.toDouble - inputStackSizeDiff),
