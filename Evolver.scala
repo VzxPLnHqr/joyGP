@@ -1,5 +1,6 @@
 package joygp
 
+import cats.kernel.Order
 import cats.effect._
 import cats.effect.syntax.all._
 import cats.implicits._
@@ -8,15 +9,17 @@ import cats.syntax.all._
 import scodec.bits._
 
 import spire.math._
+import spire.algebra.Ring
+import spire.syntax.ring.{additiveGroupOps,additiveSemigroupOps}
 
 object Evolver {
-    final case class ScoredIndividual(indiv: BitVector, score: BigInt) {
+    final case class ScoredIndividual[B](indiv: BitVector, score: B) {
         override def toString = s"ScoredIndividual($score, ${indiv.toHex})"
     }
     
     /** apply fitness function to each member of population */
-    def scorePop[A](pop: List[BitVector], fitness: A => IO[BigInt])
-                    (implicit genetic: Genetic[A]): IO[List[ScoredIndividual]] = 
+    def scorePop[A,B](pop: List[BitVector], fitness: A => IO[B])
+                    (implicit genetic: Genetic[A], ord: Order[B]): IO[List[ScoredIndividual[B]]] = 
                         pop.parTraverse{ 
                             candidate_bytes => for {
                                 repr <- IO(genetic.fromBits(candidate_bytes))
@@ -24,9 +27,9 @@ object Evolver {
                             } yield ScoredIndividual(candidate_bytes,score)
                         }
 
-    def iterateOnce[A](fitness: A => IO[BigInt])
-                  (scoredPop: List[ScoredIndividual], newPopSize: Int)
-                  (implicit genetic: Genetic[A], randomIO: std.Random[IO]): IO[List[ScoredIndividual]] = for {
+    def iterateOnce[A,B](fitness: A => IO[B])
+                  (scoredPop: List[ScoredIndividual[B]], newPopSize: Int)
+                  (implicit genetic: Genetic[A], randomIO: std.Random[IO], ord: Order[B], ring: Ring[B], randbetween: RandBetween[B]): IO[List[ScoredIndividual[B]]] = for {
         best <- IO(scoredPop).map(_.maxBy(_.score))
         //medianScore <- IO(scoredPop).map(_.sortBy(_.score)).map(_.apply(scoredPop.size / 2).score)
         // now build a new population by sampling from the old one
@@ -34,23 +37,23 @@ object Evolver {
         // always keep the top candidate from current population
         newPop <- (1 to newPopSize - 1).toList.parTraverse{ 
                     i => (for {
-                        parents <- sampleFromWeightedList(scoredPop)(randomIO)
-                                        .both(sampleFromWeightedList(scoredPop)(randomIO))
+                        parents <- sampleFromWeightedList(scoredPop)(ring,ord,randbetween,randomIO)
+                                        .both(sampleFromWeightedList(scoredPop)(ring,ord,randbetween,randomIO))
                         crossed <- crossover(parents._1.indiv,parents._2.indiv)(randomIO)
                         mutated <- mutate(crossed)(randomIO)
                         score <- IO(genetic.fromBits(mutated)).flatMap(repr => fitness(repr))
                         //improvement <- IO.println(score - medianScore)
                         // select the fittest between the mutant and the parents
                         // selected <- IO(List(parents._1, parents._2, ScoredIndividual(mutated,score))).map(_.maxBy(_.score))
-                    } yield ScoredIndividual(mutated,score)) //.iterateUntil(_.score >= medianScore)
+                    } yield ScoredIndividual[B](mutated,score)) //.iterateUntil(_.score >= medianScore)
                 }
     } yield best :: newPop
 
-    def evolveN[A](fitness: A => IO[BigInt])
-                  (startingPop: List[ScoredIndividual], numGenerations: Int, numParallel: Int, printEvery: Int = 10, maxTarget: Option[BigInt] = None)
-                  (implicit genetic: Genetic[A], randomIO: std.Random[IO]): IO[List[ScoredIndividual]] = for {
+    def evolveN[A,B](fitness: A => IO[B])
+                  (startingPop: List[ScoredIndividual[B]], numGenerations: Int, numParallel: Int, printEvery: Int = 10, maxTarget: Option[B] = None)
+                  (implicit genetic: Genetic[A], randomIO: std.Random[IO], ord: Order[B], ring: Ring[B], randbetween: RandBetween[B]): IO[List[ScoredIndividual[B]]] = for {
                     _ <- IO.unit
-                    evolveOnce = (cur_pop:List[ScoredIndividual]) => iterateOnce(fitness)(cur_pop, newPopSize = 100)(genetic,randomIO).raceN(numParallel)
+                    evolveOnce = (cur_pop:List[ScoredIndividual[B]]) => iterateOnce(fitness)(cur_pop, newPopSize = 100)(genetic,randomIO,ord,ring,randbetween).raceN(numParallel)
                     finalPop <- (1 to numGenerations).toList.foldLeftM(startingPop){
                         case (newPop, i) => if( i % printEvery == 0) {
                             evolveOnce(newPop).flatTap(_ => printGenerationSummary(newPop,i,maxTarget).start)
@@ -60,7 +63,7 @@ object Evolver {
                     }
                   } yield finalPop
 
-    def printGenerationSummary(scoredPop: List[ScoredIndividual], generationNumber: Int, maxTarget: Option[BigInt]): IO[Unit] = for {
+    def printGenerationSummary[B : Ring : Order](scoredPop: List[ScoredIndividual[B]], generationNumber: Int, maxTarget: Option[B]): IO[Unit] = for {
         _ <- IO.println(s"======= Generation $generationNumber ==========")
         _ <- IO.println(s"*****Pop size: ${scoredPop.size}")
         _ <- IO.println(s"******Target score: $maxTarget")
@@ -93,6 +96,14 @@ object Evolver {
             r <- IO(BigInt(bitlength,scala.util.Random)).iterateUntil(_ < diff)
         } yield minInclusive + r
 
+    trait RandBetween[B]{
+        def randBetween(minInclusive: B, maxExclusive: B)(using randomIO: std.Random[IO]): IO[B]
+    }
+    given RandBetween[Double] with
+        def randBetween(minInclusive: Double, maxExclusive: Double)(using randomIO: std.Random[IO]): IO[Double] = randomIO.betweenDouble(minInclusive,maxExclusive)
+    given RandBetween[BigInt] with
+        def randBetween(minInclusive: BigInt, maxExclusive: BigInt)(using randomIO: std.Random[IO]): IO[BigInt] = betweenBigInt(minInclusive,maxExclusive)
+
     /**
      *  Random selection from weighted list.
       * A solution that runs in O(n) would be to start out with selecting the first element. 
@@ -105,16 +116,17 @@ object Evolver {
       * @param pop
       * @return
       */
-    def sampleFromWeightedList[A]( scoredPop: List[ScoredIndividual])
-                                 (implicit randomIO: std.Random[IO]): IO[ScoredIndividual] =
-        scoredPop.foldLeftM((BigInt(0),Option.empty[ScoredIndividual])){ 
+    def sampleFromWeightedList[A,B : Ring : Order : RandBetween ]( scoredPop: List[ScoredIndividual[B]])
+                                 (implicit randomIO: std.Random[IO]): IO[ScoredIndividual[B]] =
+        scoredPop.foldLeftM((Ring[B].zero,Option.empty[ScoredIndividual[B]])){ 
             case ((accum_score, incumbent), candidate) => 
                 for {
                     new_accum_score <- IO(accum_score + candidate.score)
                     winner <- if(new_accum_score == 0)
                                 IO(Some(candidate))
                               else
-                                betweenBigInt(0, new_accum_score)
+                                //betweenBigInt(0, new_accum_score)
+                                implicitly[RandBetween[B]].randBetween(Ring[B].zero, new_accum_score)
                                 .map(_ < candidate.score)
                                 .ifM(
                                     ifTrue = IO(Some(candidate)),

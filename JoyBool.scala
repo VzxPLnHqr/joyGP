@@ -31,7 +31,7 @@ object JoyBool:
     // programs are a monoid!
     def combine(lhs: Program, rhs: Program): Program = (lhs,rhs) match {
       case (Quoted(b), Quoted(a)) => new Program {
-        override def size = (b.size + 1) + (a.size + 1)
+        override def size = Quoted(b).size + Quoted(a).size
         // quotations just get pushed onto stack
         def effect = state => IO(state.copy(exec = Quoted(a) :: Quoted(b) :: state.exec))
       }

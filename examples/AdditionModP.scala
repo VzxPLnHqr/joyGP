@@ -1,7 +1,7 @@
 package joygp.examples
 
 import joygp.*
-import Evolver.ScoredIndividual
+import Evolver.{ScoredIndividual,RandBetween}
 import JoyBool.*
 import cats.effect._
 import cats.effect.syntax.all._
@@ -79,7 +79,7 @@ trait AdditionModP:
 
   val randomIO: IO[std.Random[IO]] = std.Random.scalaUtilRandom
 
-  val startingPop: IO[List[ScoredIndividual]] = List.range(0,100).parTraverse{ i => 
+  val startingPop: IO[List[ScoredIndividual[BigInt]]] = List.range(0,100).parTraverse{ i => 
     for {
       size <- randomIO.flatMap(_.betweenInt(5,100))
       bits <- randomIO.flatMap(_.nextBytes(size)).map(BitVector(_))
@@ -89,10 +89,11 @@ trait AdditionModP:
   }
 
   // evolve n generations
-  def evolve(n: Int, numParallel: Int, printEvery: Int = 10, maxTarget: Option[BigInt] = None):IO[List[ScoredIndividual]] = for { 
+  def evolve(n: Int, numParallel: Int, printEvery: Int = 10, maxTarget: Option[BigInt] = None)
+              (implicit ord: cats.kernel.Order[BigInt], ring: spire.algebra.Ring[BigInt], randbetween: RandBetween[BigInt]):IO[List[ScoredIndividual[BigInt]]] = for { 
       rand <- randomIO
       pop <- startingPop
-      evolvedPop <- Evolver.evolveN(fitness)(pop,n,numParallel, printEvery,maxTarget)(Program.geneticJoyBool,rand)
+      evolvedPop <- Evolver.evolveN(fitness)(pop,n,numParallel, printEvery,maxTarget)(Program.geneticJoyBool,rand,ord,ring,randbetween)
   } yield evolvedPop
 
   def test(candidate: Program, numTests:Int = numTestCases): IO[Unit] = for {
