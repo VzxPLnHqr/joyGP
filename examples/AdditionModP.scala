@@ -37,7 +37,7 @@ trait AdditionModP:
   /** number of test cases to create for each individual assessment */
   val numTestCases: Int = 10
 
-  val fitness: Program => IO[BigInt] = candidate => {
+  val fitness: Program => IO[Double] = candidate => {
     /**
       * fitness should be linear if possible?
       * 
@@ -59,27 +59,27 @@ trait AdditionModP:
   }
 
   // where we actually calculate the "score"
-  def score(expected: ProgramState, candidate: ProgramState): BigInt = {
+  def score(expected: ProgramState, candidate: ProgramState): Double = {
     val execStackSizeDiff = math.abs(expected.exec.size - candidate.exec.size).toInt
     val inputStackSizeDiff = math.abs(expected.input.size - candidate.input.size).toInt
     val outputSizeDiff = math.abs(expected.output.size - candidate.output.size).toInt
     val outputValueDiff = if(outputSizeDiff == 0)
                             math.abs(expected.output.toInt() - candidate.output.toInt())
                           else
-                            Int.MaxValue // if size is incorrect, maximum penalty!
+                            Int.MaxValue - 1 // if size is incorrect, maximum penalty, but less 1 to avoid neg infinity
     List(
-      BigInt(Int.MaxValue - execStackSizeDiff),
-      BigInt(Int.MaxValue - inputStackSizeDiff),
-      BigInt(Int.MaxValue - outputSizeDiff),
-      2*BigInt(Int.MaxValue - outputValueDiff)
+      math.log(Int.MaxValue.toDouble - execStackSizeDiff),
+      math.log(Int.MaxValue.toDouble - inputStackSizeDiff),
+      math.log(Int.MaxValue.toDouble - outputSizeDiff),
+      math.log(Int.MaxValue.toDouble - outputValueDiff)
     ).sum
   }
 
-  val maxPossibleScore:BigInt = score(example.expectedFinalState,example.expectedFinalState)*numTestCases
+  val maxPossibleScore:Double = score(example.expectedFinalState,example.expectedFinalState)*numTestCases
 
   val randomIO: IO[std.Random[IO]] = std.Random.scalaUtilRandom
 
-  val startingPop: IO[List[ScoredIndividual[BigInt]]] = List.range(0,100).parTraverse{ i => 
+  val startingPop: IO[List[ScoredIndividual[Double]]] = List.range(0,100).parTraverse{ i => 
     for {
       size <- randomIO.flatMap(_.betweenInt(5,100))
       bits <- randomIO.flatMap(_.nextBytes(size)).map(BitVector(_))
@@ -89,8 +89,9 @@ trait AdditionModP:
   }
 
   // evolve n generations
-  def evolve(n: Int, numParallel: Int, printEvery: Int = 10, maxTarget: Option[BigInt] = None)
-              (implicit ord: cats.kernel.Order[BigInt], ring: spire.algebra.Ring[BigInt], randbetween: RandBetween[BigInt]):IO[List[ScoredIndividual[BigInt]]] = for { 
+  def evolve(n: Int, numParallel: Int, printEvery: Int = 10, maxTarget: Option[Double] = None)
+              (implicit ord: cats.kernel.Order[Double], ring: spire.algebra.Ring[Double], randbetween: RandBetween[Double])
+              :IO[List[ScoredIndividual[Double]]] = for { 
       rand <- randomIO
       pop <- startingPop
       evolvedPop <- Evolver.evolveN(fitness)(pop,n,numParallel, printEvery,maxTarget)(Program.geneticJoyBool,rand,ord,ring,randbetween)
