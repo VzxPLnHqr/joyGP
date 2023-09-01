@@ -27,12 +27,12 @@ object Evolver {
     def iterateOnce[A](fitness: A => IO[BigInt])
                   (scoredPop: List[ScoredIndividual], newPopSize: Int)
                   (implicit genetic: Genetic[A], randomIO: std.Random[IO]): IO[List[ScoredIndividual]] = for {
-
-        medianScore <- IO(scoredPop).map(_.sortBy(_.score)).map(_.apply(scoredPop.size / 2).score)
+        best <- IO(scoredPop).map(_.maxBy(_.score))
+        //medianScore <- IO(scoredPop).map(_.sortBy(_.score)).map(_.apply(scoredPop.size / 2).score)
         // now build a new population by sampling from the old one
         // predetermined/fixed population size
         // always keep the top candidate from current population
-        newPop <- (1 to newPopSize).toList.parTraverse{ 
+        newPop <- (1 to newPopSize - 1).toList.parTraverse{ 
                     i => (for {
                         parents <- sampleFromWeightedList(scoredPop)(randomIO)
                                         .both(sampleFromWeightedList(scoredPop)(randomIO))
@@ -42,9 +42,9 @@ object Evolver {
                         //improvement <- IO.println(score - medianScore)
                         // select the fittest between the mutant and the parents
                         // selected <- IO(List(parents._1, parents._2, ScoredIndividual(mutated,score))).map(_.maxBy(_.score))
-                    } yield ScoredIndividual(mutated,score)).iterateUntil(_.score >= medianScore)
+                    } yield ScoredIndividual(mutated,score)) //.iterateUntil(_.score >= medianScore)
                 }
-    } yield newPop
+    } yield best :: newPop
 
     def evolveN[A](fitness: A => IO[BigInt])
                   (startingPop: List[ScoredIndividual], numGenerations: Int, numParallel: Int, printEvery: Int = 10, maxTarget: Option[BigInt] = None)
