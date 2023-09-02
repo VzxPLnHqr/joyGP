@@ -60,20 +60,20 @@ trait AdditionModP:
 
   // where we actually calculate the "score"
   def score(expected: ProgramState, candidate: ProgramState): Double = {
-    val execStackSizeDiff = math.abs(expected.exec.size - candidate.exec.size).toInt
-    val inputStackSizeDiff = math.abs(expected.input.size - candidate.input.size).toInt
-    val outputSizeDiff = math.abs(expected.output.size - candidate.output.size).toInt
+    val execStackSizeDiff = math.abs(expected.exec.size - candidate.exec.size).toDouble
+    val inputStackSizeDiff = math.abs(expected.input.size - candidate.input.size).toDouble
+    val outputSizeDiff = math.abs(expected.output.size - candidate.output.size)
     val outputValueDiff = if(outputSizeDiff == 0)
-                            math.abs(expected.output.toInt() - candidate.output.toInt())
+                            (expected.output.xor(candidate.output)).toInt(false,scodec.bits.ByteOrdering.BigEndian)
                           else
-                            Int.MaxValue + 1 // if size is incorrect, maximum penalty, but less 1 to avoid neg infinity
+                            Int.MaxValue - 1
     List(
       math.log(Int.MaxValue.toDouble - execStackSizeDiff),
       math.log(Int.MaxValue.toDouble - inputStackSizeDiff),
       math.log(Int.MaxValue.toDouble - outputSizeDiff),
-      math.log(Int.MaxValue.toDouble - outputValueDiff)
+      math.log(Int.MaxValue.toDouble - outputValueDiff) // if output size not same, this component is zero
     ).sum
-  }
+  }.ensuring(_ > 0)
 
   val maxPossibleScore:Double = score(example.expectedFinalState,example.expectedFinalState)*numTestCases
 
