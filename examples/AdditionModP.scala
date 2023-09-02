@@ -64,7 +64,10 @@ trait AdditionModP:
     val inputStackSizeDiff = math.abs(expected.input.size - candidate.input.size).toDouble
     val outputSizeDiff = math.abs(expected.output.size - candidate.output.size)
     val outputValueDiff = if(outputSizeDiff == 0)
-                            (expected.output.xor(candidate.output)).toInt(false,scodec.bits.ByteOrdering.BigEndian)
+                            math.abs(
+                              expected.output.toInt(false,scodec.bits.ByteOrdering.BigEndian) -
+                              candidate.output.toInt(false,scodec.bits.ByteOrdering.BigEndian)
+                            )
                           else
                             Int.MaxValue - 1
     List(
