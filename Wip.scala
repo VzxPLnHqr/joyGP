@@ -10,7 +10,7 @@ case class Effect(f: ProgramState => IO[ProgramState]) extends Program
 
 final case class ProgramState(
   exec: List[Program] = Nil,
-  input: BitVector = BitVector.empty,
+  input: List[Boolean] = Nil,
   output: BitVector = BitVector.empty
 )
 
@@ -21,8 +21,8 @@ val readBit: Program = Effect {
       case None => ps // no-op if input is empty
       // if bit is true we will push a specific Quoted program onto the exec stack
       // here we just push Quoted(id) for demonstration
-      case Some(true) => ps.copy(exec = Quoted(id) :: ps.exec, input = ps.input.tail.compact)
-      case Some(false) => ps.copy(exec = Quoted(id) :: ps.exec, input = ps.input.tail.compact)
+      case Some(true) => ps.copy(exec = Quoted(id) :: ps.exec, input = ps.input.tail)
+      case Some(false) => ps.copy(exec = Quoted(id) :: ps.exec, input = ps.input.tail)
     }
   )
 }
@@ -58,6 +58,6 @@ object Program:
 
 /** read 64 bits of input. This should be fast, but unfortunately it is slooooow!*/
 def doTheTest: IO[ProgramState] = {
-  val initPS = ProgramState(input = BitVector.fill(64)(true))
+  val initPS = ProgramState(input = List.fill(64)(true))
   List.range(0,64).foldLeft(IO(initPS))((accumulatedStateIO, _) => accumulatedStateIO.flatMap(readBit(_)))
 }
