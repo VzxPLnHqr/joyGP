@@ -37,15 +37,19 @@ object Evolver {
         // always keep the top candidate from current population
         newPop <- (1 to newPopSize - 1).toList.parTraverse{ 
                     i => (for {
+                        // select parents, but mutate one of them first
                         parents <- sampleFromWeightedList(scoredPop)(ring,ord,randbetween,randomIO)
-                                        .both(sampleFromWeightedList(scoredPop)(ring,ord,randbetween,randomIO))
+                                        .both(
+                                            sampleFromWeightedList(scoredPop)(ring,ord,randbetween,randomIO)
+                                                .flatMap(si => mutate(si.indiv)(randomIO).map(bits => (bits,genetic.fromBits(bits))))
+                                                    .flatMap((bits,repr) => fitness(repr).map(s => ScoredIndividual(bits,s)))
+                                            )
                         crossed <- crossover(parents._1.indiv,parents._2.indiv)(randomIO)
                         mutated <- mutate(crossed)(randomIO)
                         score <- IO(genetic.fromBits(mutated)).flatMap(repr => fitness(repr))
-                        //improvement <- IO.println(score - medianScore)
                         // select the fittest between the mutant and the parents
-                        // selected <- IO(List(parents._1, parents._2, ScoredIndividual(mutated,score))).map(_.maxBy(_.score))
-                    } yield ScoredIndividual[B](mutated,score)) //.iterateUntil(_.score >= medianScore)
+                        selected <- IO(List(parents._1, parents._2, ScoredIndividual(mutated,score))).map(_.maxBy(_.score))
+                    } yield selected) //.iterateUntil(_.score >= medianScore)
                 }
     } yield best :: newPop
 
