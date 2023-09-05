@@ -28,9 +28,9 @@ object Evolver {
                         }
 
     def iterateOnce[A,B](fitness: A => IO[B])
-                  (scoredPop: List[ScoredIndividual[B]], newPopSize: Int)
+                  (scoredPop: List[ScoredIndividual[B]], newPopSize: Int, updateBest: ScoredIndividual[B] => IO[Unit])
                   (implicit genetic: Genetic[A], randomIO: std.Random[IO], ord: Order[B], ring: Ring[B], randbetween: RandBetween[B]): IO[List[ScoredIndividual[B]]] = for {
-        best <- IO(scoredPop).map(_.maxBy(_.score))
+        best <- IO(scoredPop).map(_.maxBy(_.score)).flatTap(updateBest(_))
         //medianScore <- IO(scoredPop).map(_.sortBy(_.score)).map(_.apply(scoredPop.size / 2).score)
         // now build a new population by sampling from the old one
         // predetermined/fixed population size
@@ -41,8 +41,8 @@ object Evolver {
                         parents <- sampleFromWeightedList(scoredPop)(ring,ord,randbetween,randomIO)
                                         .both(
                                             sampleFromWeightedList(scoredPop)(ring,ord,randbetween,randomIO)
-                                                .flatMap(si => mutate(si.indiv)(randomIO).map(bits => (bits,genetic.fromBits(bits))))
-                                                    .flatMap((bits,repr) => fitness(repr).map(s => ScoredIndividual(bits,s)))
+                                                //.flatMap(si => mutate(si.indiv)(randomIO).map(bits => (bits,genetic.fromBits(bits))))
+                                                //    .flatMap((bits,repr) => fitness(repr).map(s => ScoredIndividual(bits,s)))
                                             )
                         crossed <- crossover(parents._1.indiv,parents._2.indiv)(randomIO)
                         mutated <- mutate(crossed)(randomIO)
@@ -54,10 +54,12 @@ object Evolver {
     } yield best :: newPop
 
     def evolveN[A,B](fitness: A => IO[B])
-                  (startingPop: List[ScoredIndividual[B]], numGenerations: Int, numParallel: Int, printEvery: Int = 10, maxTarget: Option[B] = None)
+                  (startingPop: List[ScoredIndividual[B]], numGenerations: Int, 
+                   numParallel: Int, printEvery: Int = 10, maxTarget: Option[B] = None,
+                   updateBest: ScoredIndividual[B] => IO[Unit])
                   (implicit genetic: Genetic[A], randomIO: std.Random[IO], ord: Order[B], ring: Ring[B], randbetween: RandBetween[B]): IO[List[ScoredIndividual[B]]] = for {
                     _ <- IO.unit
-                    evolveOnce = (cur_pop:List[ScoredIndividual[B]]) => iterateOnce(fitness)(cur_pop, newPopSize = 100)(genetic,randomIO,ord,ring,randbetween).raceN(numParallel)
+                    evolveOnce = (cur_pop:List[ScoredIndividual[B]]) => iterateOnce(fitness)(cur_pop, newPopSize = 100, updateBest)(genetic,randomIO,ord,ring,randbetween).raceN(numParallel)
                     finalPop <- (1 to numGenerations).toList.foldLeftM(startingPop){
                         case (newPop, i) => if( i % printEvery == 0) {
                             evolveOnce(newPop).flatTap(_ => printGenerationSummary(newPop,i,maxTarget).start)
