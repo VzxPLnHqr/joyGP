@@ -211,11 +211,10 @@ object JoyBool:
       // pop the next bit from the input
       // if it is 1, push Quoted(k) onto the stack
       // otherwise push Quoted(z) onto the stack
-      IO(state).flatMap{ ps =>
-        ps.input.headOption match {
-          case Some(true) => IO(ps.copy(exec = Quoted(k) :: state.exec, input = ps.input.tail.compact))
-          case Some(false) => IO(ps.copy(exec = Quoted(z) :: state.exec, input = ps.input.tail.compact))
-          case None => IO(state) // input is empty, therefore noop
+        IO(state).map { ps => ps.input.headOption match {
+          case Some(true) => ProgramState(exec = Quoted(k) :: ps.exec, input = ps.input.tail, output = ps.output)
+          case Some(false) => ProgramState(exec = Quoted(z) :: ps.exec, input = ps.input.tail, output = ps.output)
+          case None => ps // input is empty, therefore noop
         }
       }
   }
@@ -283,3 +282,7 @@ object JoyBool:
     flush // equivalent to halting
   ))
     
+  def doTheTest: IO[ProgramState] = {
+    val initPS = ProgramState(input = BitVector.fill(64)(true))
+    List.range(0,64).foldLeft(IO(initPS))((accumulatedStateIO, _) => accumulatedStateIO.flatMap(readBit(_)))
+  }
