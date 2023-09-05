@@ -10,7 +10,7 @@ case class Effect(f: ProgramState => IO[ProgramState]) extends Program
 
 final case class ProgramState(
   exec: List[Program] = Nil,
-  input: List[Boolean] = Nil,
+  input: BitVector = BitVector.empty,
   output: BitVector = BitVector.empty
 )
 
@@ -58,6 +58,6 @@ object Program:
 
 /** read 64 bits of input. This should be fast, but unfortunately it is slooooow!*/
 def doTheTest: IO[ProgramState] = {
-  val initPS = ProgramState(input = List.fill(64)(true))
+  val initPS = ProgramState(input = BitVector.fill(64)(true))
   List.range(0,64).foldLeft(IO(initPS))((accumulatedStateIO, _) => accumulatedStateIO.flatMap(readBit(_)))
 }
