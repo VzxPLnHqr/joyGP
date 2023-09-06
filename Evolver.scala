@@ -176,13 +176,15 @@ object Evolver {
             randomIO.elementOf(scoredPop), 
             randomIO.elementOf(scoredPop),
             randomIO.nextDouble
-        ).parTupled.flatMap(
-            (fst,snd,thd,r) => IO.blocking(List(fst,snd,thd))
+        ).parFlatMapN(
+            (fst,snd,thd,r) => IO(List(fst,snd,thd))
                 .map(_.sortBy(_.score))
-                    .map { contenders => 
-                            if(r <= pThird) contenders(0)
-                            else if(r <= pSecond) contenders(1)
-                            else contenders(2)
+                    .map { 
+                        case c0 :: c1 :: c2 :: Nil => 
+                            if(r <= pThird) c0
+                            else if(r <= pSecond) c1
+                            else c2
+                        case _ => throw new RuntimeException("impossible pattern")
                     }
         )
     }
