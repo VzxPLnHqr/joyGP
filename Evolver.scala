@@ -30,17 +30,18 @@ object Evolver {
     def iterateOnce[A,B](fitness: A => IO[B])
                   (scoredPop: List[ScoredIndividual[B]], newPopSize: Int, updateBest: ScoredIndividual[B] => IO[Unit])
                   (implicit genetic: Genetic[A], randomIO: std.Random[IO], ord: Order[B], ring: Ring[B], randbetween: RandBetween[B]): IO[List[ScoredIndividual[B]]] = for {
+        
+        // find current best candidate and notify caller via updateBest callback
         best <- IO(scoredPop).map(_.maxBy(_.score)).flatTap(updateBest(_))
-        //medianScore <- IO(scoredPop).map(_.sortBy(_.score)).map(_.apply(scoredPop.size / 2).score)
+        
         // now build a new population by sampling from the old one
         // predetermined/fixed population size
-        // always keep the top candidate from current population
         newPop <- (1 to newPopSize - 1).toList.parTraverse{ 
                     i => (for {
                         // select parents, but mutate one of them first
-                        parents <- sampleFromTournament(scoredPop)(ring,ord,randomIO)
+                        parents <- sampleFromTournament(scoredPop)(ord,randomIO)
                                         .both(
-                                            sampleFromTournament(scoredPop)(ring,ord,randomIO)
+                                            sampleFromTournament(scoredPop)(ord,randomIO)
                                         )
                             /*sampleFromWeightedList(scoredPop)(ring,ord,randbetween,randomIO)
                                         .both(
@@ -50,11 +51,12 @@ object Evolver {
                                             )*/
                         crossed <- crossover(parents._1.indiv,parents._2.indiv)(randomIO)
                         mutated <- mutate(crossed)(randomIO)
-                        score <- IO(genetic.fromBits(mutated)).flatMap(repr => fitness(repr))
+                        score <- (IO(genetic.fromBits(mutated)) <* IO.cede).flatMap(repr => fitness(repr)).guarantee(IO.cede)
                         // select the fittest between the mutant and the parents
                         selected <- IO(List(parents._1, parents._2, ScoredIndividual(mutated,score))).map(_.maxBy(_.score))
                     } yield selected) //.iterateUntil(_.score >= medianScore)
                 }
+    // always keep the top candidate from current population
     } yield best :: newPop
 
     def evolveN[A,B](fitness: A => IO[B])
@@ -145,26 +147,45 @@ object Evolver {
                 } yield (new_accum_score, winner)
         }.flatMap(r => (IO.fromOption(r._2)(new RuntimeException("No candidate selected!"))))
 
-    def sampleFromTournament[A, B : Ring : Order](scoredPop: List[ScoredIndividual[B]])
+    /**
+     * Tournament Selection. Tournament selection returns the fittest individual 
+     * of some t individuals picked at random, with replacement, from the population. 
+     * First choose t (the tournament size) individuals from the population at random. 
+     * Then choose the best individual from tournament with probability p, choose 
+     * the second best individual with probability p*(1-p), choose the third best 
+     * individual with probability p*((1-p)2), and so on... Tournament Selection has 
+     * become the primary selection technique used for the Genetic Algorithm. First, 
+     * it's not sensitive to the particulars of the fitness function. Second, 
+     * it's very simple, requires no preprocessing, and works well with parallel 
+     * algorithms. Third, it's tunable: by setting the tournament size t, you can 
+     * change how selective the technique is. At the extremes, if t = 1, this is 
+     * just random search. If t is very large (much larger than the population size 
+     * itself), then the probability that the fittest individual in the population 
+     * will appear in the tournament approaches 1.0, and so Tournament Selection 
+     * just picks the fittest individual each time.
+     * source: https://haifengl.github.io/api/java/smile/gap/Selection.html
+     * */
+    def sampleFromTournament[B : Order](scoredPop: List[ScoredIndividual[B]])
                                 (implicit randomIO: std.Random[IO]): IO[ScoredIndividual[B]] = {
-                                    val size = 3
-                                    val pFirst = 0.95
-                                    val pSecond = pFirst*(1-pFirst)
-                                    val pThird = pFirst*(math.pow(1-pFirst,2))
-                                    (
-                                        randomIO.elementOf(scoredPop), 
-                                        randomIO.elementOf(scoredPop), 
-                                        randomIO.elementOf(scoredPop),
-                                        randomIO.nextDouble).parTupled.flatMap(
-                                            (fst,snd,thd,r) => IO.blocking(List(fst,snd,thd)).map(_.sortBy(_.score))
-                                                                .map { contenders => 
-                                                                        if(r <= pThird) contenders(0)
-                                                                        else if(r <= pSecond) contenders(1)
-                                                                        else contenders(2)
-                                                                    }
-                                            
-                                        )
-                                }
+        val size = 3 // hard-coded to tourney size 3
+        val pFirst = 0.95
+        val pSecond = pFirst*(1-pFirst)
+        val pThird = pFirst*(math.pow(1-pFirst,2))
+        (
+            randomIO.elementOf(scoredPop), 
+            randomIO.elementOf(scoredPop), 
+            randomIO.elementOf(scoredPop),
+            randomIO.nextDouble
+        ).parTupled.flatMap(
+            (fst,snd,thd,r) => IO.blocking(List(fst,snd,thd))
+                .map(_.sortBy(_.score))
+                    .map { contenders => 
+                            if(r <= pThird) contenders(0)
+                            else if(r <= pSecond) contenders(1)
+                            else contenders(2)
+                    }
+        )
+    }
     /**
      * perform random naive crossover between two byte vectors:
         1. for each individual pick a crossover point
