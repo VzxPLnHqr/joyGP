@@ -223,14 +223,14 @@ object JoyBool:
     state =>
       //IO(state.copy(output = true :: state.output))
       // IO(state.copy(output = BitVector.one ++ state.output))
-      IO(state.copy(output = (BitVector.one ++ state.output).compact))
+      IO.blocking(state.copy(output = (BitVector.one ++ state.output).compact))
   }
 
   val putFalse = Effect("putFalse") {
     state =>
       //IO(state.copy(output = false :: state.output))
       // IO(state.copy(output = BitVector.zero ++ state.output))
-      IO(state.copy(output = (BitVector.zero ++ state.output).compact))
+      IO.blocking(state.copy(output = (BitVector.zero ++ state.output).compact))
   }
 
   val flush = Effect("flush") {

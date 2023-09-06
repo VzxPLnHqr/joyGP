@@ -38,12 +38,16 @@ object Evolver {
         newPop <- (1 to newPopSize - 1).toList.parTraverse{ 
                     i => (for {
                         // select parents, but mutate one of them first
-                        parents <- sampleFromWeightedList(scoredPop)(ring,ord,randbetween,randomIO)
+                        parents <- sampleFromTournament(scoredPop)(ring,ord,randomIO)
+                                        .both(
+                                            sampleFromTournament(scoredPop)(ring,ord,randomIO)
+                                        )
+                            /*sampleFromWeightedList(scoredPop)(ring,ord,randbetween,randomIO)
                                         .both(
                                             sampleFromWeightedList(scoredPop)(ring,ord,randbetween,randomIO)
                                                 //.flatMap(si => mutate(si.indiv)(randomIO).map(bits => (bits,genetic.fromBits(bits))))
                                                 //    .flatMap((bits,repr) => fitness(repr).map(s => ScoredIndividual(bits,s)))
-                                            )
+                                            )*/
                         crossed <- crossover(parents._1.indiv,parents._2.indiv)(randomIO)
                         mutated <- mutate(crossed)(randomIO)
                         score <- IO(genetic.fromBits(mutated)).flatMap(repr => fitness(repr))
@@ -141,6 +145,26 @@ object Evolver {
                 } yield (new_accum_score, winner)
         }.flatMap(r => (IO.fromOption(r._2)(new RuntimeException("No candidate selected!"))))
 
+    def sampleFromTournament[A, B : Ring : Order](scoredPop: List[ScoredIndividual[B]])
+                                (implicit randomIO: std.Random[IO]): IO[ScoredIndividual[B]] = {
+                                    val size = 3
+                                    val pFirst = 0.95
+                                    val pSecond = pFirst*(1-pFirst)
+                                    val pThird = pFirst*(math.pow(1-pFirst,2))
+                                    (
+                                        randomIO.elementOf(scoredPop), 
+                                        randomIO.elementOf(scoredPop), 
+                                        randomIO.elementOf(scoredPop),
+                                        randomIO.nextDouble).parTupled.flatMap(
+                                            (fst,snd,thd,r) => IO.blocking(List(fst,snd,thd)).map(_.sortBy(_.score))
+                                                                .map { contenders => 
+                                                                        if(r <= pThird) contenders(0)
+                                                                        else if(r <= pSecond) contenders(1)
+                                                                        else contenders(2)
+                                                                    }
+                                            
+                                        )
+                                }
     /**
      * perform random naive crossover between two byte vectors:
         1. for each individual pick a crossover point
@@ -161,7 +185,7 @@ object Evolver {
         val size = input.size
         val probOfMutation = 0.01 // FIXME, just a fixed percentage for now
         val numBitsToMutate = (probOfMutation * input.size).ceil.toInt
-        val indices = (0 until numBitsToMutate).toList.traverse(i => random.betweenLong(0,size))
+        val indices = IO((0 until numBitsToMutate).toList).flatMap(_.traverse(i => random.betweenLong(0,size)))
         indices.map(_.foldLeft(input){
             (accum, i) => flipBit(accum,i)
         })
