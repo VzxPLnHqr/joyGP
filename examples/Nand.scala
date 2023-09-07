@@ -15,6 +15,8 @@ import spire.implicits._
 
 object Nand extends IOApp.Simple:
 
+  type B = Double
+
   case class TestCase(initialState: ProgramState, expectedFinalState: ProgramState)
   
   def bool2bit(b: Boolean): BitVector = b match {
@@ -28,18 +30,27 @@ object Nand extends IOApp.Simple:
   )
   val example = mkExample(true,true)
 
-  def generateTestCases(n: Int): IO[List[TestCase]] = List.range(0,n).traverse{
+  def generateTestCases(n: Int): IO[List[TestCase]] = 
+    IO(
+      List(
+        mkExample(false,false),
+        mkExample(false,true),
+        mkExample(true,false),
+        mkExample(true,true)
+      )
+    )
+    /*List.range(0,n).traverse{
     i => for {
       rand <- randomIO
       lhs <- rand.nextBoolean
       rhs <- rand.nextBoolean
     } yield mkExample(lhs,rhs)
-  }
+  }*/
 
   /** number of test cases to create for each individual assessment */
-  val numTestCases: Int = 100
+  val numTestCases: Int = 4
 
-  val fitness: Program => IO[BigInt] = candidate => {
+  val fitness: Program => IO[B] = candidate => {
     generateTestCases(numTestCases).flatMap{
       tests => tests.parTraverse{
         test => candidate(test.initialState).flatMap{
@@ -47,53 +58,56 @@ object Nand extends IOApp.Simple:
             IO(score(test.expectedFinalState,candidateFinalState))
         }
       }
-    }.map(_.sum)
+    }.map(_.product)
   }
 
   // where we actually calculate the "score"
-  def score(expected: ProgramState, candidate: ProgramState): BigInt = {
+  def score(expected: ProgramState, candidate: ProgramState): B = {
     val execStackSizeDiff = math.abs(expected.exec.size - candidate.exec.size)
     val inputStackSizeDiff = math.abs(expected.input.size - candidate.input.size)
     // if there are input bits which have not yet been read, we heavily penalize any output bits
     val outputSizeDiff =  if(inputStackSizeDiff > 0)
-                            Int.MaxValue
+                            Int.MaxValue - 1
                           else 
                             math.abs(expected.output.size - candidate.output.size)
     val outputValueDiff = if(outputSizeDiff == 0)
                               //UInt(expected.output.xor(candidate.output).toInt())
                               expected.output.xor(candidate.output).head match {
-                                case true => UInt(1)
+                                case true => UInt.MaxValue - UInt(1)
                                 case false => UInt(0)
                               }
                           else
-                              UInt.MaxValue
+                              UInt.MaxValue - UInt(1)
     List(
-      BigInt(Int.MaxValue - execStackSizeDiff),
-      BigInt(Int.MaxValue - inputStackSizeDiff),
-      BigInt(Int.MaxValue - outputSizeDiff).ensuring(_ >= 0),
-      (UInt.MaxValue - outputValueDiff).toBigInt.ensuring(_ >= 0) // if output size not same, this component is zero
+      math.log(Int.MaxValue.toDouble - execStackSizeDiff),
+      math.log(Int.MaxValue.toDouble - inputStackSizeDiff),
+      math.log(Int.MaxValue.toDouble - outputSizeDiff).ensuring(_ >= 0),
+      math.log((UInt.MaxValue - outputValueDiff).toDouble).ensuring(_ >= 0) // if output size not same, this component is zero
     ).sum
   }.ensuring(_ > 0)
 
-  val maxPossibleScore:BigInt = score(example.expectedFinalState,example.expectedFinalState)*numTestCases
+  val maxPossibleScore:B = math.pow(score(example.expectedFinalState,example.expectedFinalState),numTestCases)
 
   val randomIO: IO[std.Random[IO]] = std.Random.scalaUtilRandom
 
-  //val bestYet = IO("").map(hex => BitVector.fromValidHex(hex)).flatMap(bits => fitness(Program.parse(bits)).map(score => ScoredIndividual(bits,score)))
+  val bestYet = List(
+    // this one actually works!!!
+    BitVector.fromValidHex("1589762991aeb02605edd1b25d5d4ad0ba92eaea5785d7c74").take(194),
+  ).traverse(bits => fitness(Program.parse(bits)).map(score => ScoredIndividual(bits,score)))
   
   //val startingPop = bestYet.map(best => List.fill(100)(best))
-  val startingPop: IO[List[ScoredIndividual[BigInt]]] = List.range(0,100).parTraverse{ i => 
+  val startingPop: IO[List[ScoredIndividual[B]]] = List.range(0,100).parTraverse{ i => 
     for {
       size <- randomIO.flatMap(_.betweenInt(5,100))
       bits <- randomIO.flatMap(_.nextBytes(size)).map(BitVector(_))
       indiv <- IO(Program.parse(bits))
       score <- fitness(indiv)
     } yield ScoredIndividual(bits,score)
-  } // .flatMap(xs => bestYet.map(_ :: xs.tail))
+  } //.flatMap(xs => bestYet.map(bests => bests ++ xs.drop(bests.size)))
   
-  val refTheBest = Ref.of[IO,ScoredIndividual[BigInt]](ScoredIndividual(BitVector.empty,0))
+  val refTheBest = Ref.of[IO,ScoredIndividual[B]](ScoredIndividual(BitVector.empty,0))
   //val tolerance = math.pow(10,-14)
-  def onBest(si: ScoredIndividual[BigInt]): IO[Unit] = for {
+  def onBest(si: ScoredIndividual[B]): IO[Unit] = for {
     ref <- refTheBest
     current <- ref.get
     _ <- if((si.score - maxPossibleScore).abs == 0) 
@@ -108,10 +122,10 @@ object Nand extends IOApp.Simple:
   def evolve( n: Int, 
               numParallel: Int, 
               printEvery: Int = 10, 
-              maxTarget: Option[BigInt] = None,
-              updateBest: ScoredIndividual[BigInt] => IO[Unit] = si => IO.unit)
-              (implicit ord: cats.kernel.Order[BigInt], ring: spire.algebra.Ring[BigInt], randbetween: RandBetween[BigInt])
-              :IO[List[ScoredIndividual[BigInt]]] = for { 
+              maxTarget: Option[B] = None,
+              updateBest: ScoredIndividual[B] => IO[Unit] = si => IO.unit)
+              (implicit ord: cats.kernel.Order[B], ring: spire.algebra.Ring[B], randbetween: RandBetween[B])
+              :IO[List[ScoredIndividual[B]]] = for { 
       rand <- randomIO
       pop <- startingPop
       evolvedPop <- Evolver.evolveN(fitness)(pop,n,numParallel, printEvery,maxTarget,updateBest)(Program.geneticJoyBool,rand,ord,ring,randbetween)
@@ -135,6 +149,10 @@ object Nand extends IOApp.Simple:
     val psi = ProgramState().copy(input = bool2bit(lhs) ++ bool2bit(rhs))
     candidate(psi).map(_.output.head)
   }
+
+  extension(p: Program)
+    def mynand(lhs: Boolean, rhs: Boolean):Boolean = fx(p)(lhs)(rhs).unsafeRunSync()(cats.effect.unsafe.implicits.global)
+    //def truthtable: List[(Boolean,Boolean,Boolean)] = List(mynand)
 
   //override protected def blockedThreadDetectionEnabled = true
   def run: IO[Unit] = evolve(100000,numParallel = 1, printEvery = 20, maxTarget = Some(maxPossibleScore), updateBest = onBest).as(())
