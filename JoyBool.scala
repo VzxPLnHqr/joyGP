@@ -70,7 +70,7 @@ object JoyBool:
       // 0 == [library] [z] onto the stack
       case false => library + Quoted(z)
     }
-    def fromValidHex(hex: String): Program = parse(BitVector.fromValidHex(hex))
+    def fromValidHex(numBits: Long, hex: String): Program = parse(BitVector.fromValidHex(hex).dropRight(hex.size*4 - numBits))
     def fromValidBin(bin: String): Program = parse(BitVector.fromValidBin(bin))
     def apply(bin: String): Program = fromValidBin(bin)
     def rand(numBytes: Int): Program = parse(ByteVector(scala.util.Random.nextBytes(numBytes)).bits)
