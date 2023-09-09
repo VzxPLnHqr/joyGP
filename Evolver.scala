@@ -16,6 +16,10 @@ object Evolver {
     final case class ScoredIndividual[B](indiv: BitVector, score: B) {
         override def toString = s"ScoredIndividual($score, ${indiv.toHex})"
     }
+    extension[B](si: ScoredIndividual[B])
+        def reScore[A](fitness: A => IO[B])(using genetic: Genetic[A]): IO[ScoredIndividual[B]] =
+            IO(genetic.fromBits(si.indiv)).flatMap(fitness(_)).map(score => ScoredIndividual(si.indiv,score))
+
     
     /** apply fitness function to each member of population */
     def scorePop[A,B](pop: List[BitVector], fitness: A => IO[B])
@@ -26,22 +30,23 @@ object Evolver {
                                 score <- fitness(repr)
                             } yield ScoredIndividual(candidate_bytes,score)
                         }
+    
 
     def iterateOnce[A,B](fitness: A => IO[B])
                   (scoredPop: List[ScoredIndividual[B]], newPopSize: Int, updateBest: ScoredIndividual[B] => IO[Unit])
                   (implicit genetic: Genetic[A], randomIO: std.Random[IO], ord: Order[B], ring: Ring[B], randbetween: RandBetween[B]): IO[List[ScoredIndividual[B]]] = for {
         
         // find current best candidate and notify caller via updateBest callback
-        //best <- IO(scoredPop).map(_.maxBy(_.score)).flatTap(updateBest(_))
+        best <- IO(scoredPop).map(_.maxBy(_.score)).flatMap(_.reScore(fitness)).flatTap(updateBest(_))
         
         // now build a new population by sampling from the old one
         // predetermined/fixed population size
         newPop <- (1 to newPopSize).toList.parTraverse{ 
                     i => (for {
                         // select parents
-                        parents <- sampleFromTournament(scoredPop)(ord,randomIO)
+                        parents <- sampleFromTournament(scoredPop)(ord,randomIO).flatMap(_.reScore(fitness))
                                         .both(
-                                            sampleFromTournament(scoredPop)(ord,randomIO)
+                                            sampleFromTournament(scoredPop)(ord,randomIO).flatMap(_.reScore(fitness))
                                                 // mutate this parent
                                                 // .flatMap(si => mutate(si.indiv)(randomIO).map(bits => (bits,genetic.fromBits(bits))))
                                                 //    .flatMap((bits,repr) => fitness(repr).map(s => ScoredIndividual(bits,s)))
@@ -56,12 +61,13 @@ object Evolver {
                         mutated <- mutate(crossed)(randomIO)
                         score <- (IO(genetic.fromBits(mutated)) <* IO.cede).flatMap(repr => fitness(repr)).guarantee(IO.cede)
                         // select the fittest between the mutant and the parents
-                        selected <- IO(List(parents._1, parents._2, ScoredIndividual(mutated,score))).map(_.maxBy(_.score))
+                        //selected <- IO(List(parents._1, parents._2, ScoredIndividual(mutated,score))).map(_.maxBy(_.score))
+                        selected <- IO(ScoredIndividual(mutated,score))
                     } yield selected) //.iterateUntil(_.score >= medianScore)
                 }
     // always keep the top candidate from current population
-    // yield best :: newPop
-    } yield newPop
+    } yield best :: newPop
+    //} yield newPop
 
     def evolveN[A,B](fitness: A => IO[B])
                   (startingPop: List[ScoredIndividual[B]], numGenerations: Int, 
@@ -69,29 +75,29 @@ object Evolver {
                    updateBest: ScoredIndividual[B] => IO[Unit])
                   (implicit genetic: Genetic[A], randomIO: std.Random[IO], ord: Order[B], ring: Ring[B], randbetween: RandBetween[B]): IO[List[ScoredIndividual[B]]] = {
 
-                    def evolveOnce(cur_pop:List[ScoredIndividual[B]]) = iterateOnce(fitness)(cur_pop, newPopSize = 100, updateBest)(genetic,randomIO,ord,ring,randbetween).raceN(numParallel)
+                    def evolveOnce(cur_pop:List[ScoredIndividual[B]]) = iterateOnce(fitness)(cur_pop, newPopSize = startingPop.size, updateBest)(genetic,randomIO,ord,ring,randbetween).raceN(numParallel)
                     
                     (1 to numGenerations).toList.foldLeftM(startingPop){
                         case (newPop, i) => if( i % printEvery == 0) {
-                            evolveOnce(newPop).flatTap(_ => printGenerationSummary(newPop,i,maxTarget).start)
+                            evolveOnce(newPop).flatTap(_ => printGenerationSummary(newPop,i,fitness,maxTarget).start)
                         } else {
                             evolveOnce(newPop)
                         }
                     }
                 }
 
-    def printGenerationSummary[B : Ring : Order](scoredPop: List[ScoredIndividual[B]], generationNumber: Int, maxTarget: Option[B]): IO[Unit] = for {
+    def printGenerationSummary[A : Genetic, B : Ring : Order](scoredPop: List[ScoredIndividual[B]], generationNumber: Int, fitness: A => IO[B], maxTarget: Option[B]): IO[Unit] = for {
         _ <- IO.println(s"======= Generation $generationNumber ==========")
         _ <- IO.println(s"*****Pop size: ${scoredPop.size}")
-        _ <- IO.println(s"******Target score: $maxTarget")
-        topCandidate <- IO(scoredPop.maxBy(_.score))
-        longestCandidate <- IO(scoredPop.maxBy(_.indiv.length))
-        medianScore <- IO(scoredPop.map(_.score)).map(_.apply(scoredPop.size / 2 - 1))
-        diffFromMedian <- IO(topCandidate.score - medianScore)
+        reScoredPop <- scoredPop.parTraverse(_.reScore(fitness))
+        topCandidate <- IO(reScoredPop.maxBy(_.score))
+        longestCandidate <- IO(reScoredPop.maxBy(_.indiv.length))
+        medianScore <- IO(reScoredPop.map(_.score)).map(_.apply(scoredPop.size / 2 - 1))
+        diffFromMedian <- IO(medianScore - topCandidate.score)
         possibleImprovement <- IO(maxTarget).map(_.map(_ - topCandidate.score))
-        _ <- IO.println(s"******Median score: $medianScore")
-        _ <- IO.println(s"********Best Score: ${topCandidate.score} ($diffFromMedian from median)")
-        _ <- IO.println(s"*********Possible Improvement: $possibleImprovement")
+        _ <- IO.println(s"******Target score: $maxTarget")
+        _ <- IO.println(s"********Best Score:      ${topCandidate.score} Possible Improvement: $possibleImprovement")
+        _ <- IO.println(s"******Median score:      $medianScore ($diffFromMedian from best)")
         _ <- IO.println(s"*******Longest (${longestCandidate.indiv.size} bits)")
         _ <- IO.println(s"********* Best (${topCandidate.indiv.size} bits): ${topCandidate.indiv.toHex}")
     } yield ()
