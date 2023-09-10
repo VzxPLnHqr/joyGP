@@ -17,14 +17,14 @@ object JoyBool:
     override def size = p.size + 1 // add 1 to the quoted program
     def effect: ProgramState => IO[ProgramState] =
       // the effect of a quotation is to push itself onto the exec stack
-      state => IO(state.copy(exec = Quoted(p) :: state.exec))
+      state => IO(state.copy(exec = Quoted(p) :: state.exec, opcount = state.opcount + 1))
   }
   def Effect(f: ProgramState => IO[ProgramState]): Program = new Program {
     def effect: ProgramState => IO[ProgramState] = f
   }
 
   def Effect(name: String)( f: ProgramState => IO[ProgramState]): Program = new Program {
-    def effect = f
+    def effect = state => f(state).map(psf => psf.copy(opcount = psf.opcount + 1))
   }
 
   object Program:
@@ -33,25 +33,25 @@ object JoyBool:
       case (Quoted(b), Quoted(a)) => new Program {
         override def size = Quoted(b).size + Quoted(a).size
         // quotations just get pushed onto stack
-        def effect = state => IO(state.copy(exec = Quoted(a) :: Quoted(b) :: state.exec))
+        def effect = state => IO(state.copy(exec = Quoted(a) :: Quoted(b) :: state.exec)).map(ps => ps.copy(opcount = ps.opcount + 1))
       }
       case (Quoted(a), p: Program) => new Program{
         override def size = Quoted(a).size + p.size
         // try to execute the effect
-        def effect = state => p.effect(state.copy(exec = Quoted(a) :: state.exec))
+        def effect = state => p.effect(state.copy(exec = Quoted(a) :: state.exec)).map(ps => ps.copy(opcount = ps.opcount + 1))
       }
       case (f:Program, Quoted(a)) => new Program {
         override def size: Long = f.size + Quoted(a).size
         // execute f and then push Quoted(a) onto the stack
         def effect = 
           state => 
-            f(state).map(afterF => afterF.copy(exec = Quoted(a) :: afterF.exec))
+            f(state).map(afterF => afterF.copy(exec = Quoted(a) :: afterF.exec)).map(ps => ps.copy(opcount = ps.opcount + 1))
       }
       case (g:Program, f:Program) => new Program {
         // execute f after g
         // seem to need to lift g into IO to avoid stackoverflow
         // this might be known as trapolining, not sure, but it seems to work
-        def effect = state => IO(g).flatMap(_.effect(state)).flatMap(ps => f.effect(ps))
+        def effect = state => IO(g).flatMap(_.effect(state)).flatMap(ps => f.effect(ps)).map(ps => ps.copy(opcount = ps.opcount + 1))
         override def size: Long = g.size + f.size
       }
     }
@@ -85,12 +85,15 @@ object JoyBool:
   final case class ProgramState(
     // exec always contains the remaining code to be executed
     exec: Stack[Program] = Nil,
+    alt: Stack[Program] = Nil,
     input: BitVector = BitVector.empty,
-    output: BitVector = BitVector.empty
+    output: BitVector = BitVector.empty,
+    opcount: Long = 0
   ) {
     override def toString(): String =
       val stackSize = exec.length
-      s"\nProgramState(\n \texec ($stackSize items)= ... \n \tinput=$input \n \toutput=$output\n)"
+      val altStackSize = alt.length
+      s"\nProgramState(\n \topcount=$opcount \n \texec ($stackSize items)= ... \n \talt ($altStackSize items)= ... \n\tinput=$input \n \toutput=$output\n)"
   }
 
   extension(ps: ProgramState)
@@ -212,8 +215,8 @@ object JoyBool:
       // if it is 1, push Quoted(k) onto the stack
       // otherwise push Quoted(z) onto the stack
         IO(state).map { ps => ps.input.headOption match {
-          case Some(true) => ProgramState(exec = Quoted(k) :: ps.exec, input = ps.input.tail, output = ps.output)
-          case Some(false) => ProgramState(exec = Quoted(z) :: ps.exec, input = ps.input.tail, output = ps.output)
+          case Some(true) => ps.copy(exec = Quoted(k) :: ps.exec, input = ps.input.tail, output = ps.output)
+          case Some(false) => ps.copy(exec = Quoted(z) :: ps.exec, input = ps.input.tail, output = ps.output)
           case None => ps // input is empty, therefore noop
         }
       }
@@ -235,6 +238,19 @@ object JoyBool:
 
   val flush = Effect("flush") {
     state => IO(state.copy(exec = Nil))
+  }
+
+  val toAlt = Effect("toAlt") {
+    state => state.exec match {
+      case quotedA :: tail => IO(state.copy(exec = tail, alt = quotedA :: state.alt))
+      case _ => IO(state) // no-op
+    }
+  }
+  val fromAlt = Effect("fromAlt") {
+    state => state.alt match {
+      case quotedA :: tail => IO(state.copy(alt = tail, exec = quotedA :: state.exec))
+      case _ => IO(state) // no-op
+    }
   }
 
   // construct a "library" as a binary tree of quoted programs
@@ -274,12 +290,15 @@ object JoyBool:
     cons,
     unit,
     i,
+    // k,
     dip,
     nil,
     readBit,
     putTrue,
     putFalse,
-    flush // equivalent to halting
+    toAlt,
+    fromAlt,
+    // flush // equivalent to halting
   ))
     
   def doTheTest: IO[ProgramState] = {
