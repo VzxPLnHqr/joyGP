@@ -66,9 +66,9 @@ object JoyBool:
     def parse(bytes: ByteVector): Program = parse(bytes.bits) 
     def fromBit(bit: Boolean, library: Quoted): Program = bit match {
       // 1 == k
-      case true => k
+      case true => conservativeK // k
       // 0 == [library] [z] onto the stack
-      case false => library + Quoted(z)
+      case false => library + Quoted(conservativeZ)
     }
     def fromValidHex(numBits: Long, hex: String): Program = parse(BitVector.fromValidHex(hex).dropRight(hex.size*4 - numBits))
     def fromValidBin(bin: String): Program = parse(BitVector.fromValidBin(bin))
@@ -253,6 +253,9 @@ object JoyBool:
     }
   }
 
+  val conservativeK = toAlt + i
+  val conservativeZ = swap + conservativeK
+
   // construct a "library" as a binary tree of quoted programs
   // note: this is a naive implementation which requires an even number
   // of programs
@@ -285,7 +288,7 @@ object JoyBool:
   val stdLibrary = mkLibrary(List(
     swap,
     dup,
-    zap,
+    //zap,
     cat,
     cons,
     unit,
