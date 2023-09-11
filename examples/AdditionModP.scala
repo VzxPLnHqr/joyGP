@@ -55,13 +55,19 @@ object AdditionModP extends IOApp.Simple:
       rhs <- rand.betweenInt(0,thePrime)
     } yield mkExample(lhs,rhs)
   }
+  /*def generateTestCases(n: Int): IO[List[TestCase]] = IO(
+    for {
+      lhs <- List.range(0,31)
+      rhs <- List.range(0,31)
+    } yield mkExample(lhs,rhs)
+  )*/
 
   /** number of test cases to create for each individual assessment
    *  guessing randomly for addition mod p gives 1/31 chance of success,
    *  so setting numTestCases to 4 seems to make sense. Odds of getting 4
    *  out of 4 correct is (1/31)^4
    * */
-  val numTestCases: Int = 10
+  val numTestCases: Int = 1
 
   val fitness: Program => IO[Double] = candidate => {
     generateTestCases(numTestCases).flatMap{
@@ -179,22 +185,25 @@ object AdditionModP extends IOApp.Simple:
   
   val refTheBest = Ref.of[IO,ScoredIndividual[Double]](ScoredIndividual(BitVector.empty,0.0))
   val tolerance = math.pow(10,-14)
-  def onBest(si: ScoredIndividual[Double])(using genetic: Genetic[Program]): IO[Unit] = for {
-    ref <- refTheBest
-    current <- ref.get
-    _ <- IO.println("!!!!!!!!! NEW BEST !!!!!!!!")
-    p <- IO(genetic.fromBits(si.indiv))
-    _ <- test(p,1)
-    /*_ <- if((si.score - maxPossibleScore).abs == 0.0) 
-            ref.set(si) 
-              >> IO.println(s"!!!!!!!!!!!!! TARGET ACHIEVED ${si.score}  !!!!!! $si") 
-                >> IO.raiseError(new RuntimeException("TARGET ACHIEVED!!!"))
-          else 
-            IO.unit*/
-    _ <- IO.println("!!!!!!!!!!!!!!!!!!!!!!!!!!")
-    
-    //_ <- IO.unit
-  } yield ()
+  //val refWhenTest = Ref.of[IO,Deadline](Deadline.now + 5.seconds)
+  val onBestBP = std.Backpressure[IO](std.Backpressure.Strategy.Lossy,1)
+  def onBest(si: ScoredIndividual[Double])(using genetic: Genetic[Program]): IO[Unit] = 
+    onBestBP.flatMap { backpressure => 
+      for {
+        f1 <- backpressure.metered({ 
+              IO.sleep(5.seconds) *>
+                (for {
+                  ref <- refTheBest
+                  currentBest <- ref.get
+                  _ <- IO.println("!!!!!!!!! NEW BEST !!!!!!!!")
+                  p <- IO(genetic.fromBits(si.indiv))
+                  _ <- test(p,1)
+                  _ <- IO.println("!!!!!!!!!!!!!!!!!!!!!!!!!!")
+                } yield ())
+              }).start
+        res1 <- f1.joinWithNever
+      } yield ()
+    }
 
   // evolve n generations
   def evolve( n: Int, 
