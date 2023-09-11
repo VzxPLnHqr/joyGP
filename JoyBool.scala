@@ -215,8 +215,8 @@ object JoyBool:
       // if it is 1, push Quoted(k) onto the stack
       // otherwise push Quoted(z) onto the stack
         IO(state).map { ps => ps.input.headOption match {
-          case Some(true) => ps.copy(exec = Quoted(k) :: ps.exec, input = ps.input.tail, output = ps.output)
-          case Some(false) => ps.copy(exec = Quoted(z) :: ps.exec, input = ps.input.tail, output = ps.output)
+          case Some(true) => ps.copy(exec = Quoted(conservativeK) :: ps.exec, input = ps.input.tail, output = ps.output)
+          case Some(false) => ps.copy(exec = Quoted(conservativeZ) :: ps.exec, input = ps.input.tail, output = ps.output)
           case None => ps // input is empty, therefore noop
         }
       }
@@ -224,16 +224,24 @@ object JoyBool:
 
   val putTrue = Effect("putTrue") {
     state =>
-      //IO(state.copy(output = true :: state.output))
-      // IO(state.copy(output = BitVector.one ++ state.output))
       IO.blocking(state.copy(output = (BitVector.one ++ state.output).compact))
+  }
+  val maybePutTrue = Effect("maybePutTrue") {
+    state => state.input.isEmpty match {
+      case true => putTrue.effect(state)
+      case false => IO(state) // no-op if we have not finished reading input
+    }
   }
 
   val putFalse = Effect("putFalse") {
     state =>
-      //IO(state.copy(output = false :: state.output))
-      // IO(state.copy(output = BitVector.zero ++ state.output))
       IO.blocking(state.copy(output = (BitVector.zero ++ state.output).compact))
+  }
+  val maybePutFalse = Effect("maybePutFalse") {
+    state => state.input.isEmpty match {
+      case true => putFalse.effect(state)
+      case false => IO(state) // no-op if e have not finished reading input
+    }
   }
 
   val flush = Effect("flush") {
@@ -248,12 +256,12 @@ object JoyBool:
   }
   val fromAlt = Effect("fromAlt") {
     state => state.alt match {
-      case quotedA :: tail => IO(state.copy(alt = tail, exec = quotedA :: state.exec))
+      case quotedA :: tail => IO(state.copy(exec = quotedA :: state.exec, alt = tail))
       case _ => IO(state) // no-op
     }
   }
 
-  val conservativeK = toAlt + i
+  val conservativeK = swap + toAlt + i
   val conservativeZ = swap + conservativeK
 
   // construct a "library" as a binary tree of quoted programs
@@ -287,18 +295,22 @@ object JoyBool:
 
   val stdLibrary = mkLibrary(List(
     swap,
-    dup,
+    //dup,
     //zap,
     cat,
     cons,
     unit,
     i,
     // k,
+    conservativeK,
+    conservativeZ,
     dip,
     nil,
     readBit,
-    putTrue,
-    putFalse,
+    //putTrue,
+    //putFalse,
+    maybePutTrue,
+    maybePutFalse,
     toAlt,
     fromAlt,
     // flush // equivalent to halting
