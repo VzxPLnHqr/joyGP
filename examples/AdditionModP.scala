@@ -13,22 +13,24 @@ import scodec.bits._
 import spire.math._
 import spire.implicits._
 
+import scala.concurrent.duration.*
+
 object AdditionModP extends IOApp.Simple:
+
+  val silentDuration = 2.second
+  var silentUntil = silentDuration.fromNow
+
   val thePrime: Int = 31
 
   case class TestCase(initialState: ProgramState, expectedFinalState: ProgramState)
 
+  val c = 96.toDouble / 32.toDouble // the max "speed" an input bit can be turned into an output bit
+
   extension(psi: ProgramState)
-    /**
-      * naive euclidean distance between program states
-      *
-      * @param psf
-      * @return
-      */
-    def squaredDistanceFrom(psf: ProgramState): Double = {
-      math.pow(psf.exec.size - psi.exec.size, 2)
-      + math.pow(psf.input.size - psi.input.size, 2)
-      + math.pow(psf.output.size - psi.output.size,2)
+    def distanceFrom(psf: ProgramState): Double = {
+      //math.abs(psf.opcount - psi.opcount)
+      //+ (math.abs(psf.exec.size - psi.exec.size))
+      (math.pow(c*(psf.input.size - psi.input.size),2)) - (math.pow(psf.output.size - psi.output.size,2))
     }
 
   extension(xs: Iterable[Double])
@@ -44,6 +46,7 @@ object AdditionModP extends IOApp.Simple:
     expectedFinalState = ProgramState().copy(output = BitVector.fromInt((lhs + rhs) % thePrime))
   )
   val example = mkExample(18,19)
+  val maxStateChange = example.initialState.distanceFrom(example.expectedFinalState)
 
   def generateTestCases(n: Int): IO[List[TestCase]] = List.range(0,n).parTraverse{
     i => for {
@@ -58,7 +61,7 @@ object AdditionModP extends IOApp.Simple:
    *  so setting numTestCases to 4 seems to make sense. Odds of getting 4
    *  out of 4 correct is (1/31)^4
    * */
-  val numTestCases: Int = 4
+  val numTestCases: Int = 10
 
   val fitness: Program => IO[Double] = candidate => {
     generateTestCases(numTestCases).flatMap{
@@ -69,7 +72,7 @@ object AdditionModP extends IOApp.Simple:
         }
       }
     }
-  }.map(scores => scores.min + maxVariance - scores.sampleVariance).flatTap(s => if(s < 0) IO.println("!!!!!!!fitness less than zero!!!") else IO.unit)
+  }.map(scores => scores.mean) //.flatTap(s => if(s < 0) IO.println("!!!!!!!fitness less than zero!!!") else IO.unit)
   //}.map(scores => scores.min / (scores.sampleVariance + 1)).flatTap(s => if(s < 0) IO.println("!!!!!!!fitness less than zero!!!") else IO.unit)
   //}.map(scores => scores.zipWithIndex.map((s,i) => s / (i+1)).sum / (scores.sampleVariance + 1)).flatTap(s => if(s < 0) IO.println("!!!!!!!fitness less than zero!!!") else IO.unit)
   //}.map(scores => math.exp(-math.log(scores.variance + 1)))//.flatTap(s => if(s < 0) IO.println("!!!!!!!fitness less than zero!!!") else IO.unit)
@@ -80,9 +83,11 @@ object AdditionModP extends IOApp.Simple:
   val maxVariance = (numTestCases.toDouble / (numTestCases - 1))*math.pow(maxPerTestScore,2)/4
   val maxStdDev = math.sqrt(maxVariance)
 
+  import scala.concurrent.duration.*
+
   // where we actually calculate the "score"
   def score(expected: ProgramState, candidate: ProgramState): Double = {
-    val execStackSizeDiff = math.abs(expected.exec.size - candidate.exec.size)
+    /*val execStackSizeDiff = math.abs(expected.exec.size - candidate.exec.size)
     val inputSizeDiff = math.abs(expected.input.size - candidate.input.size)
     val outputSizeDiff = math.abs(expected.output.size - candidate.output.size)
     val outputValueDiff = if(outputSizeDiff == 0 && inputSizeDiff == 0)
@@ -99,13 +104,48 @@ object AdditionModP extends IOApp.Simple:
       math.log(Int.MaxValue.toDouble - inputSizeDiff),
       math.log(Int.MaxValue.toDouble - outputSizeDiff),
       (math.log((UInt.MaxValue - outputValueDiff).toDouble)).ensuring(_ >= 0) // if output size not same, this component is zero
+    ).sum*/
+    val d = maxStateChange - candidate.distanceFrom(expected)
+    val execSizeDiff = math.abs(expected.exec.size - candidate.exec.size)
+    val inputSizeDiff = math.abs(expected.input.size - candidate.input.size)
+    val outputSizeDiff = if(inputSizeDiff == 0) 
+                              math.abs(expected.output.size - candidate.output.size)
+                         else
+                              //math.abs(expected.output.size - candidate.output.size)
+                              Int.MaxValue - math.abs(expected.output.size - candidate.output.size) - 1
+    val outputValueDiff = if(inputSizeDiff == 0 && outputSizeDiff == 0 )
+                              UInt(expected.output.xor(candidate.output).toInt())
+                          else
+                              UInt.MaxValue - UInt(1)
+    val opcount = candidate.opcount
+
+    /*if(silentUntil.hasTimeLeft())
+      ()
+    else
+      println(d + "\tinputSizeDiff: " + inputSizeDiff + "\toutputSizeDiff: "+ outputSizeDiff + "\topcount: " + opcount)
+        if(outputSizeDiff == 0 && inputSizeDiff == 0) 
+          println(s"\t\t\t\t!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\t $outputValueDiff")
+      silentUntil = silentDuration.fromNow
+    */
+    /*List(
+      math.log((Long.MaxValue - opcount).toDouble),
+      math.log((Int.MaxValue - execSizeDiff).toDouble),
+      math.log((Int.MaxValue - inputSizeDiff).toDouble),
+      math.log((Int.MaxValue - outputSizeDiff).toDouble),
+      math.log((UInt.MaxValue - outputValueDiff).toDouble)
+    ).sum*/
+    List(
+      -(execSizeDiff.toLong).toDouble,
+      -math.pow(inputSizeDiff,2),
+      -(outputSizeDiff).toDouble,
+      -(outputValueDiff.toLong.toDouble)
     ).sum
-  }.ensuring(_ > 0)
+  } // .ensuring(_ > 0)
 
   //val maxPossibleScore:Double = List.range(0,numTestCases).map(i => maxPerTestScore / (i + 1)).sum
   //val maxPossibleScore:Double = maxPerTestScore*numTestCases + math.pow(maxPerTestScore,2)/4
   //val maxPossibleScore:Double = math.pow(maxPerTestScore,numTestCases) + maxVariance
-  val maxPossibleScore:Double = maxPerTestScore + maxVariance
+  val maxPossibleScore:Double = maxPerTestScore
 
   val randomIO: IO[std.Random[IO]] = std.Random.scalaUtilRandom
 
@@ -139,15 +179,21 @@ object AdditionModP extends IOApp.Simple:
   
   val refTheBest = Ref.of[IO,ScoredIndividual[Double]](ScoredIndividual(BitVector.empty,0.0))
   val tolerance = math.pow(10,-14)
-  def onBest(si: ScoredIndividual[Double]): IO[Unit] = for {
+  def onBest(si: ScoredIndividual[Double])(using genetic: Genetic[Program]): IO[Unit] = for {
     ref <- refTheBest
     current <- ref.get
-    _ <- if((si.score - maxPossibleScore).abs == 0.0) 
+    _ <- IO.println("!!!!!!!!! NEW BEST !!!!!!!!")
+    p <- IO(genetic.fromBits(si.indiv))
+    _ <- test(p,1)
+    /*_ <- if((si.score - maxPossibleScore).abs == 0.0) 
             ref.set(si) 
               >> IO.println(s"!!!!!!!!!!!!! TARGET ACHIEVED ${si.score}  !!!!!! $si") 
                 >> IO.raiseError(new RuntimeException("TARGET ACHIEVED!!!"))
           else 
-            IO.unit
+            IO.unit*/
+    _ <- IO.println("!!!!!!!!!!!!!!!!!!!!!!!!!!")
+    
+    //_ <- IO.unit
   } yield ()
 
   // evolve n generations
