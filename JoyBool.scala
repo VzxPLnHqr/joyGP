@@ -24,7 +24,7 @@ object JoyBool:
   }
 
   def Effect(name: String)( f: ProgramState => IO[ProgramState]): Program = new Program {
-    def effect = state => f(state).map(psf => psf.copy(opcount = psf.opcount + 1))
+    def effect = state => IO.cede *> f(state).map(psf => psf.copy(opcount = psf.opcount + 1)).guarantee(IO.cede)
   }
 
   object Program:
@@ -33,25 +33,25 @@ object JoyBool:
       case (Quoted(b), Quoted(a)) => new Program {
         override def size = Quoted(b).size + Quoted(a).size
         // quotations just get pushed onto stack
-        def effect = state => IO(state.copy(exec = Quoted(a) :: Quoted(b) :: state.exec)).map(ps => ps.copy(opcount = ps.opcount + 1))
+        def effect = state => IO.cede *> IO(state.copy(exec = Quoted(a) :: Quoted(b) :: state.exec)).map(ps => ps.copy(opcount = ps.opcount + 1)).guarantee(IO.cede)
       }
       case (Quoted(a), p: Program) => new Program{
         override def size = Quoted(a).size + p.size
         // try to execute the effect
-        def effect = state => p.effect(state.copy(exec = Quoted(a) :: state.exec)).map(ps => ps.copy(opcount = ps.opcount + 1))
+        def effect = state => IO.cede *> p.effect(state.copy(exec = Quoted(a) :: state.exec)).map(ps => ps.copy(opcount = ps.opcount + 1)).guarantee(IO.cede)
       }
       case (f:Program, Quoted(a)) => new Program {
         override def size: Long = f.size + Quoted(a).size
         // execute f and then push Quoted(a) onto the stack
         def effect = 
           state => 
-            f(state).map(afterF => afterF.copy(exec = Quoted(a) :: afterF.exec)).map(ps => ps.copy(opcount = ps.opcount + 1))
+            IO.cede *> f(state).map(afterF => afterF.copy(exec = Quoted(a) :: afterF.exec)).map(ps => ps.copy(opcount = ps.opcount + 1)).guarantee(IO.cede)
       }
       case (g:Program, f:Program) => new Program {
         // execute f after g
         // seem to need to lift g into IO to avoid stackoverflow
         // this might be known as trapolining, not sure, but it seems to work
-        def effect = state => IO(g).flatMap(_.effect(state)).flatMap(ps => f.effect(ps)).map(ps => ps.copy(opcount = ps.opcount + 1))
+        def effect = state => IO.cede *> IO(g).flatMap(_.effect(state)).guarantee(IO.cede).flatMap(ps => f.effect(ps)).map(ps => ps.copy(opcount = ps.opcount + 1)).guarantee(IO.cede)
         override def size: Long = g.size + f.size
       }
     }
@@ -76,7 +76,11 @@ object JoyBool:
     def rand(numBytes: Int): Program = parse(ByteVector(scala.util.Random.nextBytes(numBytes)).bits)
 
     given geneticJoyBool: Genetic[Program] with {
-      def fromBits(genome: BitVector): Program = Program.parse(genome,stdLibrary)
+      def fromBits(genome: BitVector): Genetic.Decoded[Program] = 
+        Genetic.Decoded(
+          value = Program.parse(genome,stdLibrary),
+          remainingGenome = BitVector.empty
+        )
     }
 
   extension (lhs: Program)
@@ -116,7 +120,7 @@ object JoyBool:
   // nil == []
   val nil = Quoted(id)
 
-  val i = Effect("i") { state => 
+  val i = Effect("i") { state =>
     // [A] i == A
     state.exec match {
       case Quoted(a) :: tail => a.effect(state.copy(exec = tail))
@@ -180,6 +184,14 @@ object JoyBool:
     }
   }
 
+  val sap = Effect("sap") { state =>
+    // [B] [A] sap  == A B
+      state.exec match {
+        case Quoted(a) :: Quoted(b) :: tail => a(state.copy(exec = tail)).flatMap(b(_))
+        case _ => IO(state) // noop
+      }
+  }
+
   val unit = Effect("unit") { state => 
     // [A] unit == [[A]]
     state.exec match {
@@ -224,7 +236,7 @@ object JoyBool:
 
   val putTrue = Effect("putTrue") {
     state =>
-      IO.blocking(state.copy(output = (BitVector.one ++ state.output).compact))
+      IO(state.copy(output = (BitVector.one ++ state.output)))
   }
   val maybePutTrue = Effect("maybePutTrue") {
     state => state.input.isEmpty match {
@@ -235,7 +247,7 @@ object JoyBool:
 
   val putFalse = Effect("putFalse") {
     state =>
-      IO.blocking(state.copy(output = (BitVector.zero ++ state.output).compact))
+      IO(state.copy(output = (BitVector.zero ++ state.output)))
   }
   val maybePutFalse = Effect("maybePutFalse") {
     state => state.input.isEmpty match {
@@ -299,6 +311,7 @@ object JoyBool:
     //zap,
     cat,
     cons,
+    sap, 
     unit,
     i,
     // k,
