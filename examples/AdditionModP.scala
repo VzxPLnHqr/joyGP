@@ -196,7 +196,7 @@ object AdditionModP extends IOApp.Simple:
                   ref <- refTheBest
                   currentBest <- ref.get
                   _ <- IO.println("!!!!!!!!! NEW BEST !!!!!!!!")
-                  p <- IO(genetic.fromBits(si.indiv))
+                  p <- IO(genetic.fromBits(si.indiv).value)
                   _ <- test(p,1)
                   _ <- IO.println("!!!!!!!!!!!!!!!!!!!!!!!!!!")
                 } yield ())
@@ -212,11 +212,14 @@ object AdditionModP extends IOApp.Simple:
               maxTarget: Option[Double] = None,
               updateBest: ScoredIndividual[Double] => IO[Unit] = si => IO.unit)
               (implicit ord: cats.kernel.Order[Double], ring: spire.algebra.Ring[Double], randbetween: RandBetween[Double])
-              :IO[List[ScoredIndividual[Double]]] = for { 
-      rand <- randomIO
-      pop <- startingPop
-      evolvedPop <- Evolver.evolveN(fitness)(pop,n,numParallel, printEvery,maxTarget,updateBest)(Program.geneticJoyBool,rand,ord,ring,randbetween)
-  } yield evolvedPop
+              :IO[List[ScoredIndividual[Double]]] =
+    std.Supervisor[IO].use{ supervisor =>
+      for { 
+          rand <- randomIO
+          pop <- startingPop
+          evolvedPop <- Evolver.evolveN(fitness)(pop,n,numParallel, printEvery,maxTarget,updateBest)(using Program.geneticJoyBool,supervisor,rand,ord,ring,randbetween)
+      } yield evolvedPop
+    }
 
   def test(candidate: Program, numTests:Int = numTestCases): IO[Unit] = for {
     cases <- generateTestCases(numTests)

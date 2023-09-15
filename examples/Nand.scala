@@ -124,11 +124,10 @@ object Nand extends IOApp.Simple:
               printEvery: Int = 10, 
               maxTarget: Option[B] = None,
               updateBest: ScoredIndividual[B] => IO[Unit] = si => IO.unit)
-              (implicit ord: cats.kernel.Order[B], ring: spire.algebra.Ring[B], randbetween: RandBetween[B])
+              (using ord: cats.kernel.Order[B], ring: spire.algebra.Ring[B], randbetween: RandBetween[B], rand: std.Random[IO], supervisor: std.Supervisor[IO])
               :IO[List[ScoredIndividual[B]]] = for { 
-      rand <- randomIO
       pop <- startingPop
-      evolvedPop <- Evolver.evolveN(fitness)(pop,n,numParallel, printEvery,maxTarget,updateBest)(Program.geneticJoyBool,rand,ord,ring,randbetween)
+      evolvedPop <- Evolver.evolveN(fitness)(pop,n,numParallel, printEvery,maxTarget,updateBest)(using Program.geneticJoyBool,supervisor,rand,ord,ring,randbetween)
   } yield evolvedPop
 
   def test(candidate: Program, numTests:Int = numTestCases): IO[Unit] = for {
@@ -155,7 +154,10 @@ object Nand extends IOApp.Simple:
     //def truthtable: List[(Boolean,Boolean,Boolean)] = List(mynand)
 
   //override protected def blockedThreadDetectionEnabled = true
-  def run: IO[Unit] = evolve(100000,numParallel = 1, printEvery = 20, maxTarget = Some(maxPossibleScore), updateBest = onBest).as(())
+  def run: IO[Unit] = (std.Random.scalaUtilRandom[IO].toResource, std.Supervisor[IO]).tupled.use{
+    case (given std.Random[IO], given std.Supervisor[IO]) => 
+      evolve(100000,numParallel = 1, printEvery = 20, maxTarget = Some(maxPossibleScore), updateBest = onBest).as(())
+  }
 
   def hamming(lhs: Int, rhs: Int): Int = java.lang.Integer.bitCount(lhs ^ rhs)
   extension(i: Int)
