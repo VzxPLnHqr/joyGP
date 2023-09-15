@@ -2,6 +2,7 @@ package joygp
 
 import cats.kernel.Order
 import cats.effect._
+import cats.effect.std._
 import cats.effect.syntax.all._
 import cats.implicits._
 import cats.syntax.all._
@@ -18,7 +19,7 @@ object Evolver {
     }
     extension[B](si: ScoredIndividual[B])
         def reScore[A](fitness: A => IO[B])(using genetic: Genetic[A]): IO[ScoredIndividual[B]] =
-            IO(genetic.fromBits(si.indiv)).flatMap(fitness(_)).map(score => ScoredIndividual(si.indiv,score))
+            IO(genetic.fromBits(si.indiv)).flatMap(repr => fitness(repr.value)).map(score => ScoredIndividual(si.indiv,score))
 
     
     /** apply fitness function to each member of population */
@@ -27,17 +28,16 @@ object Evolver {
                         pop.parTraverse{ 
                             candidate_bytes => for {
                                 repr <- IO(genetic.fromBits(candidate_bytes))
-                                score <- fitness(repr)
+                                score <- fitness(repr.value)
                             } yield ScoredIndividual(candidate_bytes,score)
                         }
-    
 
     def iterateOnce[A,B](fitness: A => IO[B])
                   (scoredPop: List[ScoredIndividual[B]], newPopSize: Int, updateBest: ScoredIndividual[B] => IO[Unit])
-                  (implicit genetic: Genetic[A], randomIO: std.Random[IO], ord: Order[B], ring: Ring[B], randbetween: RandBetween[B]): IO[List[ScoredIndividual[B]]] = for {
+                  (using genetic: Genetic[A], supervisor: Supervisor[IO], randomIO: std.Random[IO], ord: Order[B], ring: Ring[B], randbetween: RandBetween[B]): IO[List[ScoredIndividual[B]]] = for {
         
         // find current best candidate and notify caller via updateBest callback
-        best <- IO(scoredPop).map(_.maxBy(_.score)).flatMap(_.reScore(fitness)).flatTap(updateBest(_))
+        best <- IO(scoredPop).map(_.maxBy(_.score)).flatMap(_.reScore(fitness)).flatTap(si => supervisor.supervise(updateBest(si)))
         
         // now build a new population by sampling from the old one
         // predetermined/fixed population size
@@ -57,9 +57,9 @@ object Evolver {
                                                 //.flatMap(si => mutate(si.indiv)(randomIO).map(bits => (bits,genetic.fromBits(bits))))
                                                 //    .flatMap((bits,repr) => fitness(repr).map(s => ScoredIndividual(bits,s)))
                                             )*/
-                        crossed <- crossover(parents._1.indiv,parents._2.indiv)(randomIO)
-                        mutated <- mutate(crossed)(randomIO)
-                        score <- (IO(genetic.fromBits(mutated)) <* IO.cede).flatMap(repr => fitness(repr)).guarantee(IO.cede)
+                        crossed <- crossover(parents._1.indiv,parents._2.indiv)
+                        mutated <- mutate(crossed)
+                        score <- (IO(genetic.fromBits(mutated)) <* IO.cede).flatMap(repr => fitness(repr.value)).guarantee(IO.cede)
                         // select the fittest between the mutant and the parents
                         //selected <- IO(List(parents._1, parents._2, ScoredIndividual(mutated,score))).map(_.maxBy(_.score))
                         selected <- IO(ScoredIndividual(mutated,score))
@@ -68,23 +68,22 @@ object Evolver {
     // always keep the top candidate from current population
     } yield best :: newPop
     //} yield newPop
-
+    
     def evolveN[A,B](fitness: A => IO[B])
                   (startingPop: List[ScoredIndividual[B]], numGenerations: Int, 
                    numParallel: Int, printEvery: Int = 10, maxTarget: Option[B] = None,
                    updateBest: ScoredIndividual[B] => IO[Unit])
-                  (implicit genetic: Genetic[A], randomIO: std.Random[IO], ord: Order[B], ring: Ring[B], randbetween: RandBetween[B]): IO[List[ScoredIndividual[B]]] = {
-
-                    def evolveOnce(cur_pop:List[ScoredIndividual[B]]) = iterateOnce(fitness)(cur_pop, newPopSize = startingPop.size, updateBest)(genetic,randomIO,ord,ring,randbetween).raceN(numParallel)
-                    
-                    (1 to numGenerations).toList.foldLeftM(startingPop){
-                        case (newPop, i) => if( i % printEvery == 0) {
-                            evolveOnce(newPop).flatTap(_ => printGenerationSummary(newPop,i,fitness,maxTarget).start)
-                        } else {
-                            evolveOnce(newPop)
-                        }
-                    }
+                  (using genetic: Genetic[A], supervisor: Supervisor[IO], randomIO: std.Random[IO], ord: Order[B], ring: Ring[B], randbetween: RandBetween[B]): IO[List[ScoredIndividual[B]]] = 
+        def evolveOnce(cur_pop:List[ScoredIndividual[B]]) = iterateOnce(fitness)(cur_pop, newPopSize = startingPop.size, updateBest).raceN(numParallel)
+        for {     
+            finalpop <- (1 to numGenerations).toList.foldLeftM(startingPop){
+                case (newPop, i) => if( i % printEvery == 0) {
+                    evolveOnce(newPop) <* supervisor.supervise(printGenerationSummary(newPop,i,fitness,maxTarget))
+                } else {
+                    evolveOnce(newPop)
                 }
+            }
+        } yield finalpop
 
     def printGenerationSummary[A : Genetic, B : Ring : Order](scoredPop: List[ScoredIndividual[B]], generationNumber: Int, fitness: A => IO[B], maxTarget: Option[B]): IO[Unit] = for {
         _ <- IO.println(s"======= Generation $generationNumber ==========")
@@ -96,11 +95,12 @@ object Evolver {
         medianScore <- IO(reScoredPop.map(_.score)).map(_.apply(scoredPop.size / 2 - 1))
         diffFromMedian <- IO(medianScore - topCandidate.score)
         possibleImprovement <- IO(maxTarget).map(_.map(_ - topCandidate.score))
+        bestHex <- IO(if(topCandidate.indiv.size > 1000) "..." else topCandidate.indiv.toHex)
         _ <- IO.println(s"******Target score: $maxTarget")
         _ <- IO.println(s"********Best Score:      ${topCandidate.score} Possible Improvement: $possibleImprovement")
         _ <- IO.println(s"******Median score:      $medianScore ($diffFromMedian from best)")
         _ <- IO.println(s"*******Range [${shortestCandidate.indiv.size}, ${longestCandidate.indiv.size}] bits")
-        _ <- IO.println(s"********* Best (${topCandidate.indiv.size} bits): ${topCandidate.indiv.toHex}")
+        _ <- IO.println(s"********* Best (${topCandidate.indiv.size} bits): $bestHex")
     } yield ()
         
 
@@ -206,17 +206,16 @@ object Evolver {
         3. take the head of lhs and tail of rhs
      * */
     def crossover(lhs: BitVector, rhs: BitVector)
-        (implicit random: std.Random[IO]): IO[BitVector] = for {
+        (using random: std.Random[IO]): IO[BitVector] = for {
             i <- random.betweenInt(0,lhs.size.toInt + 1)
             j <- random.betweenInt(0,rhs.size.toInt + 1)
             bits <- IO(lhs.take(i)).map(_ ++ rhs.drop(j))
-            //_ <- IO.println(bytes.size - lhs.size)
         } yield bits
 
     /**
      * naive mutation
      * to the length of the gnome */
-    def mutate(input: BitVector)(implicit random: std.Random[IO]): IO[BitVector] = {
+    def mutate(input: BitVector)(using random: std.Random[IO]): IO[BitVector] = {
         val size = input.size
         val probOfMutation = 0.01 // FIXME, just a fixed percentage for now
         val numBitsToMutate = (probOfMutation * input.size).ceil.toInt
