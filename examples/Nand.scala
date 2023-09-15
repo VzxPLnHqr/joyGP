@@ -1,6 +1,6 @@
 package joygp.examples
 
-import joygp.*
+import joygp.{given,*}
 import Evolver.*
 import JoyBool.*
 import cats.effect._
@@ -127,7 +127,7 @@ object Nand extends IOApp.Simple:
               (using ord: cats.kernel.Order[B], ring: spire.algebra.Ring[B], randbetween: RandBetween[B], rand: std.Random[IO], supervisor: std.Supervisor[IO])
               :IO[List[ScoredIndividual[B]]] = for { 
       pop <- startingPop
-      evolvedPop <- Evolver.evolveN(fitness)(pop,n,numParallel, printEvery,maxTarget,updateBest)(using Program.geneticJoyBool,supervisor,rand,ord,ring,randbetween)
+      evolvedPop <- Evolver.throttled(1).flatMap(_.evolveN(fitness)(pop,n,numParallel, printEvery,maxTarget,updateBest)(using Program.geneticJoyBool,supervisor,rand,ord,ring,randbetween))
   } yield evolvedPop
 
   def test(candidate: Program, numTests:Int = numTestCases): IO[Unit] = for {

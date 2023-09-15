@@ -13,13 +13,19 @@ import spire.math._
 import spire.algebra.Ring
 import spire.syntax.ring.{additiveGroupOps,additiveSemigroupOps}
 
-object Evolver {
-    final case class ScoredIndividual[B](indiv: BitVector, score: B) {
-        override def toString = s"ScoredIndividual($score, ${indiv.toHex})"
-    }
+final case class ScoredIndividual[B](indiv: BitVector, score: B) {
+    override def toString = s"ScoredIndividual($score, ${indiv.toHex})"
+}
+
+trait Evolver:
+    
+    val throttle: Semaphore[IO]
+    extension[A](fa: IO[A])
+        def throttled:IO[A] = throttle.permit.use(_ => fa)
+
     extension[B](si: ScoredIndividual[B])
         def reScore[A](fitness: A => IO[B])(using genetic: Genetic[A]): IO[ScoredIndividual[B]] =
-            IO(genetic.fromBits(si.indiv)).flatMap(repr => fitness(repr.value)).map(score => ScoredIndividual(si.indiv,score))
+            IO(genetic.fromBits(si.indiv)).flatMap(repr => fitness(repr.value).throttled).map(score => ScoredIndividual(si.indiv,score))
 
     
     /** apply fitness function to each member of population */
@@ -28,7 +34,7 @@ object Evolver {
                         pop.parTraverse{ 
                             candidate_bytes => for {
                                 repr <- IO(genetic.fromBits(candidate_bytes))
-                                score <- fitness(repr.value)
+                                score <- fitness(repr.value).throttled
                             } yield ScoredIndividual(candidate_bytes,score)
                         }
 
@@ -59,7 +65,7 @@ object Evolver {
                                             )*/
                         crossed <- crossover(parents._1.indiv,parents._2.indiv)
                         mutated <- mutate(crossed)
-                        score <- (IO(genetic.fromBits(mutated)) <* IO.cede).flatMap(repr => fitness(repr.value)).guarantee(IO.cede)
+                        score <- (IO(genetic.fromBits(mutated)) <* IO.cede).flatMap(repr => fitness(repr.value).throttled).guarantee(IO.cede)
                         // select the fittest between the mutant and the parents
                         //selected <- IO(List(parents._1, parents._2, ScoredIndividual(mutated,score))).map(_.maxBy(_.score))
                         selected <- IO(ScoredIndividual(mutated,score))
@@ -103,160 +109,165 @@ object Evolver {
         _ <- IO.println(s"********* Best (${topCandidate.indiv.size} bits): $bestHex")
     } yield ()
         
-
-    /**
-      * select a random big integer
-      * (currently uses scala.util.Random)
-      *
-      * @param minInclusive
-      * @param maxExclusive
-      * @param randomIO
-      * @return
-      */
-    def betweenBigInt(minInclusive: BigInt, maxExclusive: BigInt)
-        (implicit randomIO: std.Random[IO]): IO[BigInt] = for {
-            diff <- IO(maxExclusive - minInclusive)
-            bitlength <- IO(diff.bitLength)
-            r <- IO(BigInt(bitlength,scala.util.Random)).iterateUntil(_ < diff)
-        } yield minInclusive + r
-
-    trait RandBetween[B]{
-        def randBetween(minInclusive: B, maxExclusive: B)(using randomIO: std.Random[IO]): IO[B]
-    }
-    given RandBetween[Double] with
-        def randBetween(minInclusive: Double, maxExclusive: Double)(using randomIO: std.Random[IO]): IO[Double] = randomIO.betweenDouble(minInclusive,maxExclusive)
-    given RandBetween[BigInt] with
-        def randBetween(minInclusive: BigInt, maxExclusive: BigInt)(using randomIO: std.Random[IO]): IO[BigInt] = betweenBigInt(minInclusive,maxExclusive)
-
-    /**
-     *  Random selection from weighted list.
-      * A solution that runs in O(n) would be to start out with selecting the first element. 
-      * Then for each following element either keep the element you have or replace 
-      * it with the next one. Let w be the sum of all weights for elements considered 
-      * so far. Then keep the old one with probability w/(w+x) and choose the new 
-      * one with p=x/(w+x), where x is the weight of the next element.
-      * Source: https://stackoverflow.com/questions/4511331/randomly-selecting-an-element-from-a-weighted-list
-      *
-      * @param pop
-      * @return
-      */
-    def sampleFromWeightedList[A,B : Ring : Order : RandBetween ]( scoredPop: List[ScoredIndividual[B]])
-                                 (implicit randomIO: std.Random[IO]): IO[ScoredIndividual[B]] =
-        scoredPop.foldLeftM((Ring[B].zero,Option.empty[ScoredIndividual[B]])){ 
-            case ((accum_score, incumbent), candidate) => 
-                for {
-                    new_accum_score <- IO(accum_score + candidate.score)
-                    winner <- if(new_accum_score == 0)
-                                IO(Some(candidate))
-                              else
-                                //betweenBigInt(0, new_accum_score)
-                                implicitly[RandBetween[B]].randBetween(Ring[B].zero, new_accum_score)
-                                .map(_ < candidate.score)
-                                .ifM(
-                                    ifTrue = IO(Some(candidate)),
-                                    ifFalse = IO(incumbent)
-                                )
-                } yield (new_accum_score, winner)
-        }.flatMap(r => (IO.fromOption(r._2)(new RuntimeException("No candidate selected!"))))
-
-    /**
-     * Tournament Selection. Tournament selection returns the fittest individual 
-     * of some t individuals picked at random, with replacement, from the population. 
-     * First choose t (the tournament size) individuals from the population at random. 
-     * Then choose the best individual from tournament with probability p, choose 
-     * the second best individual with probability p*(1-p), choose the third best 
-     * individual with probability p*((1-p)2), and so on... Tournament Selection has 
-     * become the primary selection technique used for the Genetic Algorithm. First, 
-     * it's not sensitive to the particulars of the fitness function. Second, 
-     * it's very simple, requires no preprocessing, and works well with parallel 
-     * algorithms. Third, it's tunable: by setting the tournament size t, you can 
-     * change how selective the technique is. At the extremes, if t = 1, this is 
-     * just random search. If t is very large (much larger than the population size 
-     * itself), then the probability that the fittest individual in the population 
-     * will appear in the tournament approaches 1.0, and so Tournament Selection 
-     * just picks the fittest individual each time.
-     * source: https://haifengl.github.io/api/java/smile/gap/Selection.html
-     * */
-    def sampleFromTournament[B : Order](scoredPop: List[ScoredIndividual[B]])
-                                (implicit randomIO: std.Random[IO]): IO[ScoredIndividual[B]] = {
-        val size = 3 // hard-coded to tourney size 3
-        val pFirst = 0.95
-        val pSecond = pFirst*(1-pFirst)
-        val pThird = pFirst*(math.pow(1-pFirst,2))
-        (
-            randomIO.elementOf(scoredPop), 
-            randomIO.elementOf(scoredPop), 
-            randomIO.elementOf(scoredPop),
-            randomIO.nextDouble
-        ).parFlatMapN(
-            (fst,snd,thd,r) => IO(List(fst,snd,thd))
-                .map(_.sortBy(_.score))
-                    .map { 
-                        case c0 :: c1 :: c2 :: Nil => 
-                            if(r <= pThird) c0
-                            else if(r <= pSecond) c1
-                            else c2
-                        case _ => throw new RuntimeException("impossible pattern")
-                    }
-        )
-    }
-    /**
-     * perform random naive crossover between two byte vectors:
-        1. for each individual pick a crossover point
-        3. take the head of lhs and tail of rhs
-     * */
-    def crossover(lhs: BitVector, rhs: BitVector)
-        (using random: std.Random[IO]): IO[BitVector] = for {
-            i <- random.betweenInt(0,lhs.size.toInt + 1)
-            j <- random.betweenInt(0,rhs.size.toInt + 1)
-            bits <- IO(lhs.take(i)).map(_ ++ rhs.drop(j))
-        } yield bits
-
-    /**
-     * naive mutation
-     * to the length of the gnome */
-    def mutate(input: BitVector)(using random: std.Random[IO]): IO[BitVector] = {
-        val size = input.size
-        val probOfMutation = 0.01 // FIXME, just a fixed percentage for now
-        val numBitsToMutate = (probOfMutation * input.size).ceil.toInt
-        val indices = IO((0 until numBitsToMutate).toList).flatMap(_.traverse(i => random.betweenLong(0,size)))
-        indices.map(_.foldLeft(input){
-            (accum, i) => flipBit(accum,i)
-        })
-    }
-    def flipBit(bits: BitVector, i: Long): BitVector = bits.get(i) match {
-        case true => bits.clear(i)
-        case false => bits.set(i)
-    }
-
-    def mutateByte(p: Double, b: Byte)(implicit random: std.Random[IO]): IO[Byte] = 
-        random.nextDouble.map(_ <= p).flatMap{ 
-                case true => random.nextBytes(1).map(_.head)
-                case false => IO(b)
-    }
-
-    /** race a list of IOs and return first
-     * source: https://github.com/paul-snively/easyracer/commit/0642a62131e9127b28f32d781913b366539601e0#diff-9676066bc2a39fc2e916043cdb6c565c7ddce8fb8d85c17ea44dd7b2d193a6b6R94
-     * // Fabio Labella's multiRace.
-     * */
-    def multiRace[F[_]: Concurrent, A](fas: List[F[A]]): F[A] = {
-        def spawn[B](fa: F[B]): Resource[F, Unit] =
-        Resource.make(fa.start)(_.cancel).void
-
-        def finish(fa: F[A], d: Deferred[F, Either[Throwable, A]]): F[Unit] =
-        fa.attempt.flatMap(d.complete).void
-
-        Deferred[F, Either[Throwable, A]]
-        .flatMap { result =>
-            fas
-            .traverse(fa => spawn(finish(fa, result)))
-            .use(_ => result.get.rethrow)
+object Evolver:
+    def throttled(n: Long): IO[Evolver] = Semaphore[IO](n).map {
+        theThrottle => new Evolver {
+            val throttle = theThrottle
         }
     }
-    
-    extension[F[_],A](effect: F[A])(using Concurrent[F])
-        /** replicate `n` times and take first result **/
-        def raceN(n: Int): F[A] = multiRace(List.fill(n)(effect))
+
+/**
+     * select a random big integer
+     * (currently uses scala.util.Random)
+     *
+     * @param minInclusive
+     * @param maxExclusive
+     * @param randomIO
+     * @return
+     */
+def betweenBigInt(minInclusive: BigInt, maxExclusive: BigInt)
+    (implicit randomIO: std.Random[IO]): IO[BigInt] = for {
+        diff <- IO(maxExclusive - minInclusive)
+        bitlength <- IO(diff.bitLength)
+        r <- IO(BigInt(bitlength,scala.util.Random)).iterateUntil(_ < diff)
+    } yield minInclusive + r
+
+trait RandBetween[B]{
+    def randBetween(minInclusive: B, maxExclusive: B)(using randomIO: std.Random[IO]): IO[B]
 }
+given RandBetween[Double] with
+    def randBetween(minInclusive: Double, maxExclusive: Double)(using randomIO: std.Random[IO]): IO[Double] = randomIO.betweenDouble(minInclusive,maxExclusive)
+given RandBetween[BigInt] with
+    def randBetween(minInclusive: BigInt, maxExclusive: BigInt)(using randomIO: std.Random[IO]): IO[BigInt] = betweenBigInt(minInclusive,maxExclusive)
+
+/**
+ *  Random selection from weighted list.
+     * A solution that runs in O(n) would be to start out with selecting the first element. 
+     * Then for each following element either keep the element you have or replace 
+     * it with the next one. Let w be the sum of all weights for elements considered 
+     * so far. Then keep the old one with probability w/(w+x) and choose the new 
+     * one with p=x/(w+x), where x is the weight of the next element.
+     * Source: https://stackoverflow.com/questions/4511331/randomly-selecting-an-element-from-a-weighted-list
+     *
+     * @param pop
+     * @return
+     */
+def sampleFromWeightedList[A,B : Ring : Order : RandBetween ]( scoredPop: List[ScoredIndividual[B]])
+                                (implicit randomIO: std.Random[IO]): IO[ScoredIndividual[B]] =
+    scoredPop.foldLeftM((Ring[B].zero,Option.empty[ScoredIndividual[B]])){ 
+        case ((accum_score, incumbent), candidate) => 
+            for {
+                new_accum_score <- IO(accum_score + candidate.score)
+                winner <- if(new_accum_score == 0)
+                            IO(Some(candidate))
+                            else
+                            //betweenBigInt(0, new_accum_score)
+                            implicitly[RandBetween[B]].randBetween(Ring[B].zero, new_accum_score)
+                            .map(_ < candidate.score)
+                            .ifM(
+                                ifTrue = IO(Some(candidate)),
+                                ifFalse = IO(incumbent)
+                            )
+            } yield (new_accum_score, winner)
+    }.flatMap(r => (IO.fromOption(r._2)(new RuntimeException("No candidate selected!"))))
+
+/**
+ * Tournament Selection. Tournament selection returns the fittest individual 
+ * of some t individuals picked at random, with replacement, from the population. 
+ * First choose t (the tournament size) individuals from the population at random. 
+ * Then choose the best individual from tournament with probability p, choose 
+ * the second best individual with probability p*(1-p), choose the third best 
+ * individual with probability p*((1-p)2), and so on... Tournament Selection has 
+ * become the primary selection technique used for the Genetic Algorithm. First, 
+ * it's not sensitive to the particulars of the fitness function. Second, 
+ * it's very simple, requires no preprocessing, and works well with parallel 
+ * algorithms. Third, it's tunable: by setting the tournament size t, you can 
+ * change how selective the technique is. At the extremes, if t = 1, this is 
+ * just random search. If t is very large (much larger than the population size 
+ * itself), then the probability that the fittest individual in the population 
+ * will appear in the tournament approaches 1.0, and so Tournament Selection 
+ * just picks the fittest individual each time.
+ * source: https://haifengl.github.io/api/java/smile/gap/Selection.html
+ * */
+def sampleFromTournament[B : Order](scoredPop: List[ScoredIndividual[B]])
+                            (implicit randomIO: std.Random[IO]): IO[ScoredIndividual[B]] = {
+    val size = 3 // hard-coded to tourney size 3
+    val pFirst = 0.95
+    val pSecond = pFirst*(1-pFirst)
+    val pThird = pFirst*(math.pow(1-pFirst,2))
+    (
+        randomIO.elementOf(scoredPop), 
+        randomIO.elementOf(scoredPop), 
+        randomIO.elementOf(scoredPop),
+        randomIO.nextDouble
+    ).parFlatMapN(
+        (fst,snd,thd,r) => IO(List(fst,snd,thd))
+            .map(_.sortBy(_.score))
+                .map { 
+                    case c0 :: c1 :: c2 :: Nil => 
+                        if(r <= pThird) c0
+                        else if(r <= pSecond) c1
+                        else c2
+                    case _ => throw new RuntimeException("impossible pattern")
+                }
+    )
+}
+/**
+ * perform random naive crossover between two byte vectors:
+    1. for each individual pick a crossover point
+    3. take the head of lhs and tail of rhs
+    * */
+def crossover(lhs: BitVector, rhs: BitVector)
+    (using random: std.Random[IO]): IO[BitVector] = for {
+        i <- random.betweenInt(0,lhs.size.toInt + 1)
+        j <- random.betweenInt(0,rhs.size.toInt + 1)
+        bits <- IO(lhs.take(i)).map(_ ++ rhs.drop(j))
+    } yield bits
+
+/**
+ * naive mutation
+ * to the length of the gnome */
+def mutate(input: BitVector)(using random: std.Random[IO]): IO[BitVector] = {
+    val size = input.size
+    val probOfMutation = 0.01 // FIXME, just a fixed percentage for now
+    val numBitsToMutate = (probOfMutation * input.size).ceil.toInt
+    val indices = IO((0 until numBitsToMutate).toList).flatMap(_.traverse(i => random.betweenLong(0,size)))
+    indices.map(_.foldLeft(input){
+        (accum, i) => flipBit(accum,i)
+    })
+}
+def flipBit(bits: BitVector, i: Long): BitVector = bits.get(i) match {
+    case true => bits.clear(i)
+    case false => bits.set(i)
+}
+
+def mutateByte(p: Double, b: Byte)(implicit random: std.Random[IO]): IO[Byte] = 
+    random.nextDouble.map(_ <= p).flatMap{ 
+            case true => random.nextBytes(1).map(_.head)
+            case false => IO(b)
+}
+
+/** race a list of IOs and return first
+ * source: https://github.com/paul-snively/easyracer/commit/0642a62131e9127b28f32d781913b366539601e0#diff-9676066bc2a39fc2e916043cdb6c565c7ddce8fb8d85c17ea44dd7b2d193a6b6R94
+ * // Fabio Labella's multiRace.
+ * */
+def multiRace[F[_]: Concurrent, A](fas: List[F[A]]): F[A] = {
+    def spawn[B](fa: F[B]): Resource[F, Unit] =
+    Resource.make(fa.start)(_.cancel).void
+
+    def finish(fa: F[A], d: Deferred[F, Either[Throwable, A]]): F[Unit] =
+    fa.attempt.flatMap(d.complete).void
+
+    Deferred[F, Either[Throwable, A]]
+    .flatMap { result =>
+        fas
+        .traverse(fa => spawn(finish(fa, result)))
+        .use(_ => result.get.rethrow)
+    }
+}
+
+extension[F[_],A](effect: F[A])(using Concurrent[F])
+    /** replicate `n` times and take first result **/
+    def raceN(n: Int): F[A] = multiRace(List.fill(n)(effect))
 
 

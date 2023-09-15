@@ -1,6 +1,6 @@
 package joygp.examples
 
-import joygp.*
+import joygp.{given,*}
 import Evolver.*
 import JoyBool.*
 import cats.effect._
@@ -217,7 +217,7 @@ object AdditionModP extends IOApp.Simple:
       for { 
           rand <- randomIO
           pop <- startingPop
-          evolvedPop <- Evolver.evolveN(fitness)(pop,n,numParallel, printEvery,maxTarget,updateBest)(using Program.geneticJoyBool,supervisor,rand,ord,ring,randbetween)
+          evolvedPop <- Evolver.throttled(1).flatMap(_.evolveN(fitness)(pop,n,numParallel, printEvery,maxTarget,updateBest)(using Program.geneticJoyBool,supervisor,rand,ord,ring,randbetween))
       } yield evolvedPop
     }
 
