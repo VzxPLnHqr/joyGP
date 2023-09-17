@@ -1,6 +1,8 @@
 package joygp
 
 import scodec.bits._
+import cats.{Monad, Monoid}
+import cats.syntax.all.*
 
 
 trait Genetic[A]:
@@ -32,3 +34,18 @@ object Genetic:
       val Decoded(a,remaining) = ga.fromBits(genome)
       Decoded(f(a),remaining)
   }
+
+  given geneticMonad : Monad[Genetic] with
+    def pure[A](x: A): Genetic[A] = Genetic.point(x)
+    def flatMap[A, B](fa: Genetic[A])(f: A => Genetic[B]): Genetic[B] = Genetic.fmap(fa)(f)
+    def tailRecM[A, B](a: A)(f: A => Genetic[Either[A, B]]): Genetic[B] = new Genetic[B] {
+      def fromBits(genome: BitVector): Decoded[B] = f(a).fromBits(genome) match {
+        case Decoded(Left(a1), remainingGenome) => tailRecM(a1)(f).fromBits(remainingGenome)
+        case Decoded(Right(b),remainingGenome) => Decoded(b,remainingGenome)
+      }
+    }
+
+  given geneticMonoid[A : Monoid]: Monoid[Genetic[A]] with
+    def empty: Genetic[A] = Genetic.point(Monoid[A].empty)
+    def combine(x: Genetic[A], y: Genetic[A]): Genetic[A] =
+      x.flatMap(lhs => y.map(rhs => Monoid[A].combine(lhs,rhs)))
