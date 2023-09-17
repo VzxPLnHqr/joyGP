@@ -2,6 +2,7 @@ package joygp
 
 import cats.effect.IO
 import scodec.bits.{ByteVector,BitVector}
+import cats.Monoid
 
 object JoyBool:
 
@@ -56,12 +57,13 @@ object JoyBool:
       }
     }
     def parse(bits: BitVector, library: Quoted = stdLibrary): Program = {
-      @annotation.tailrec
+      /*@annotation.tailrec
       def inner(prog: Program, remaining: BitVector): Program = remaining.headOption match {
         case Some(bit) => inner(prog + fromBit(bit,library), remaining.drop(1))
         case None => prog // we are done
       }
-      inner(id,bits)
+      inner(id,bits)*/
+      bits.toIndexedSeq.foldLeft(id)((accum,bit) => accum + fromBit(bit,library))
     }
     def parse(bytes: ByteVector): Program = parse(bytes.bits) 
     def fromBit(bit: Boolean, library: Quoted): Program = bit match {
@@ -74,6 +76,13 @@ object JoyBool:
     def fromValidBin(bin: String): Program = parse(BitVector.fromValidBin(bin))
     def apply(bin: String): Program = fromValidBin(bin)
     def rand(numBytes: Int): Program = parse(ByteVector(scala.util.Random.nextBytes(numBytes)).bits)
+
+    /** instances **/
+
+    given monoidJoyBool: Monoid[Program] with {
+      def empty: Program = id
+      def combine(x: Program, y: Program): Program = Program.combine(x,y)
+    }
 
     given geneticJoyBool: Genetic[Program] with {
       def fromBits(genome: BitVector): Genetic.Decoded[Program] = 
