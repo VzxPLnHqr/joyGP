@@ -35,6 +35,23 @@ object Genetic:
       Decoded(f(a),remaining)
   }
 
+  def tupled[A,B](ga: Genetic[A], gb: Genetic[B]): Genetic[(A,B)] = new Genetic[(A,B)] {
+    def fromBits(genome: BitVector): Decoded[(A, B)] =
+      val decodedA = ga.fromBits(genome)
+      val decodedB = gb.fromBits(decodedA.remainingGenome)
+      Decoded((decodedA.value, decodedB.value),decodedB.remainingGenome)
+  }
+  /** concrete genomes **/
+  def int32: Genetic[Int] = new Genetic[Int] {
+    def fromBits(genome: BitVector): Decoded[Int] = Decoded(genome.take(32).toInt(), genome.drop(32))
+  }
+
+  def double64: Genetic[Double] = new Genetic[Double] {
+    def fromBits(genome: BitVector): Decoded[Double] = 
+      Decoded(java.nio.ByteBuffer.wrap(genome.take(64).padLeft(64).bytes.toArray).getDouble(), genome.drop(64))
+  }
+  /** instances **/
+
   given geneticMonad : Monad[Genetic] with
     def pure[A](x: A): Genetic[A] = Genetic.point(x)
     def flatMap[A, B](fa: Genetic[A])(f: A => Genetic[B]): Genetic[B] = Genetic.fmap(fa)(f)
