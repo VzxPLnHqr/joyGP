@@ -53,6 +53,12 @@ object Genetic:
       Decoded(java.nio.ByteBuffer.wrap(genome.take(64).padLeft(64).bytes.toArray).getDouble(), genome.drop(64))
   }
 
+  def bits(numBits: Int): Genetic[BitVector] = new Genetic[BitVector] {
+    def fromBits(genome: BitVector): Decoded[BitVector] = Decoded(genome.take(numBits),genome.drop(numBits))
+  }
+
+  def unit: Genetic[Unit] = Genetic.point(())
+
   // max size (in bits) followed by the string itself
   def stringUtf8: Genetic[(Int,String)] = new Genetic[(Int,String)] {
     def fromBits(genome: BitVector): Decoded[(Int,String)] =
