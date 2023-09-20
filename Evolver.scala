@@ -116,29 +116,13 @@ object Evolver:
         }
     }
 
-/**
-     * select a random big integer
-     * (currently uses scala.util.Random)
-     *
-     * @param minInclusive
-     * @param maxExclusive
-     * @param randomIO
-     * @return
-     */
-def betweenBigInt(minInclusive: BigInt, maxExclusive: BigInt)
-    (implicit randomIO: std.Random[IO]): IO[BigInt] = for {
-        diff <- IO(maxExclusive - minInclusive)
-        bitlength <- IO(diff.bitLength)
-        r <- IO(BigInt(bitlength,scala.util.Random)).iterateUntil(_ < diff)
-    } yield minInclusive + r
-
 trait RandBetween[B]{
     def randBetween(minInclusive: B, maxExclusive: B)(using randomIO: std.Random[IO]): IO[B]
 }
 given RandBetween[Double] with
     def randBetween(minInclusive: Double, maxExclusive: Double)(using randomIO: std.Random[IO]): IO[Double] = randomIO.betweenDouble(minInclusive,maxExclusive)
 given RandBetween[BigInt] with
-    def randBetween(minInclusive: BigInt, maxExclusive: BigInt)(using randomIO: std.Random[IO]): IO[BigInt] = betweenBigInt(minInclusive,maxExclusive)
+    def randBetween(minInclusive: BigInt, maxExclusive: BigInt)(using randomIO: std.Random[IO]): IO[BigInt] = randomIO.betweenBigInt(minInclusive,maxExclusive)
 
 /**
  *  Random selection from weighted list.
@@ -221,7 +205,7 @@ def crossover(lhs: BitVector, rhs: BitVector)
     (using random: std.Random[IO]): IO[BitVector] = for {
         i <- random.betweenInt(0,lhs.size.toInt + 1)
         j <- random.betweenInt(0,rhs.size.toInt + 1)
-        bits <- IO(lhs.take(i)).map(_ ++ rhs.drop(j))
+        bits <- IO.blocking(lhs.take(i)).map(_ ++ rhs.drop(j))
     } yield bits
 
 /**
@@ -231,7 +215,7 @@ def mutate(input: BitVector)(using random: std.Random[IO]): IO[BitVector] = {
     val size = input.size
     val probOfMutation = 0.01 // FIXME, just a fixed percentage for now
     val numBitsToMutate = (probOfMutation * input.size).ceil.toInt
-    val indices = IO((0 until numBitsToMutate).toList).flatMap(_.traverse(i => random.betweenLong(0,size)))
+    val indices = IO.blocking((0 until numBitsToMutate).toList).flatMap(_.traverse(i => random.betweenLong(0,size)))
     indices.map(_.foldLeft(input){
         (accum, i) => flipBit(accum,i)
     })
