@@ -316,7 +316,7 @@ object JoyBool:
 
   val stdLibrary = mkLibrary(List(
     swap,
-    //dup,
+    dup,
     //zap,
     cat,
     cons,
